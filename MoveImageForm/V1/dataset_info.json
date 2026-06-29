@@ -1,0 +1,1 @@
+{"crop_type":0,"crop_with_mask":false,"label_names":["磁体缺损","涂层异物","漏磁","裂纹","铁粉残留","电极漏铜"],"roi_rate":[0,0,1,1],"version":"440","xml_base_num":1}
