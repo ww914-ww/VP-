@@ -49,8 +49,10 @@ namespace MoveImageForm
             };
             
             var exitItem = new System.Windows.Forms.ToolStripMenuItem("完全退出");
-            exitItem.Click += (s, e) => 
+            exitItem.Click += (s, e) =>
             {
+                UpdateConfigFromUI();
+                SaveConfig();
                 _notifyIcon.Visible = false;
                 _notifyIcon.Dispose();
                 System.Windows.Application.Current.Shutdown();
@@ -514,24 +516,35 @@ namespace MoveImageForm
 
         private void LoadConfig()
         {
+            string path = GetConfigFilePath();
+            if (!File.Exists(path))
+            {
+                _config = new AppConfig();
+                return;
+            }
+
             try
             {
-                string path = GetConfigFilePath();
-                if (File.Exists(path))
+                XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
+                using (StreamReader reader = new StreamReader(path))
                 {
-                    XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
-                    using (StreamReader reader = new StreamReader(path))
-                    {
-                        _config = (AppConfig)serializer.Deserialize(reader);
-                    }
-                }
-                else
-                {
-                    _config = new AppConfig();
+                    _config = (AppConfig)serializer.Deserialize(reader);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                string backupPath = path + ".bak";
+                try
+                {
+                    if (File.Exists(backupPath))
+                        File.Delete(backupPath);
+                    File.Move(path, backupPath);
+                    Log($"配置文件已损坏，已备份为 {System.IO.Path.GetFileName(backupPath)}，将使用默认配置。错误: {ex.Message}");
+                }
+                catch
+                {
+                    Log($"配置文件读取失败，将使用默认配置。错误: {ex.Message}");
+                }
                 _config = new AppConfig();
             }
         }
@@ -541,15 +554,19 @@ namespace MoveImageForm
             try
             {
                 string path = GetConfigFilePath();
+                string tmpPath = path + ".tmp";
                 XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
-                using (StreamWriter writer = new StreamWriter(path))
+                using (StreamWriter writer = new StreamWriter(tmpPath))
                 {
                     serializer.Serialize(writer, _config);
                 }
+                if (File.Exists(path))
+                    File.Delete(path);
+                File.Move(tmpPath, path);
             }
             catch (Exception ex)
             {
-                MessageBox.Show("保存配置失败: " + ex.Message);
+                Log($"保存配置失败: {ex.Message}");
             }
         }
 
