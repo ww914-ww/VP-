@@ -1,4 +1,7 @@
 using System;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Linq;
@@ -6,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Xml.Serialization;
+using Microsoft.Win32;
 
 namespace MoveImageForm
 {
@@ -16,6 +20,16 @@ namespace MoveImageForm
         private bool _isRunning;
         private DateTime _lastMoveTime;
         private System.Windows.Forms.NotifyIcon _notifyIcon;
+
+        // 进程监听
+        private System.Windows.Threading.DispatcherTimer _processTimer;
+        private ObservableCollection<ProcessViewModel> _processList;
+
+        // 版本更新
+        private System.Windows.Threading.DispatcherTimer _updateTimer;
+        private string _latestCloudVersion;
+        private string _latestCloudDate;
+        private string _latestCloudNote;
 
         public MainWindow()
         {
@@ -28,7 +42,7 @@ namespace MoveImageForm
             _notifyIcon = new System.Windows.Forms.NotifyIcon();
             // 默认使用系统的应用程序图标，这里也可以替换为你自己的ico文件
             _notifyIcon.Icon = SystemIcons.Application;
-            _notifyIcon.Text = "图片搬运工具 (后台运行中)";
+            _notifyIcon.Text = "poco运维工具 (后台运行中)";
             _notifyIcon.Visible = true;
 
             _notifyIcon.DoubleClick += (s, e) =>
@@ -80,6 +94,9 @@ namespace MoveImageForm
             {
                 Log("未使用默认自动启动功能：没有找到完全配置好且存在的监控文件夹。");
             }
+
+            InitProcessMonitoring();
+            InitVersionUpdate();
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -506,6 +523,491 @@ namespace MoveImageForm
             return targetFile.Length == sourceFile.Length &&
                    targetFile.LastWriteTimeUtc >= sourceFile.LastWriteTimeUtc;
         }
+
+        #region Process Monitoring
+
+        private void InitProcessMonitoring()
+        {
+            _processList = new ObservableCollection<ProcessViewModel>();
+            foreach (var proc in _config.WatchProcesses)
+            {
+                _processList.Add(ProcessViewModel.FromProcessInfo(proc, SaveProcessList));
+            }
+            dgProcesses.ItemsSource = _processList;
+
+            _processTimer = new System.Windows.Threading.DispatcherTimer();
+            _processTimer.Interval = TimeSpan.FromSeconds(5);
+            _processTimer.Tick += ProcessTimer_Tick;
+            _processTimer.Start();
+
+            CheckAllProcesses();
+        }
+
+        private void ProcessTimer_Tick(object sender, EventArgs e)
+        {
+            CheckAllProcesses();
+        }
+
+        private void CheckAllProcesses()
+        {
+            foreach (var proc in _processList)
+            {
+                if (!proc.Enabled)
+                {
+                    proc.IsRunning = false;
+                    continue;
+                }
+
+                try
+                {
+                    string procName = Path.GetFileNameWithoutExtension(proc.Name);
+                    var processes = Process.GetProcessesByName(procName);
+                    bool wasRunning = proc.IsRunning;
+                    proc.IsRunning = processes.Length > 0;
+
+                    if (wasRunning && !proc.IsRunning)
+                    {
+                        string msg = $"进程 {proc.Name} 已停止运行";
+                        Log(msg);
+                        Dispatcher.InvokeAsync(() =>
+                        {
+                            _notifyIcon.ShowBalloonTip(3000, "进程监听", msg,
+                                System.Windows.Forms.ToolTipIcon.Warning);
+                        });
+                    }
+                }
+                catch
+                {
+                    proc.IsRunning = false;
+                }
+            }
+        }
+
+        private void BtnAddProcess_Click(object sender, RoutedEventArgs e)
+        {
+            string name = txtProcessName.Text.Trim();
+            string path = txtProcessPath.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                MessageBox.Show("请输入进程名！");
+                return;
+            }
+
+            foreach (var p in _processList)
+            {
+                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                {
+                    MessageBox.Show($"进程 {name} 已在监控列表中！");
+                    return;
+                }
+            }
+
+            var vm = new ProcessViewModel
+            {
+                Name = name,
+                Path = path,
+                Enabled = true,
+                SaveCallback = SaveProcessList
+            };
+            _processList.Add(vm);
+            SaveProcessList();
+
+            txtProcessName.Clear();
+            txtProcessPath.Clear();
+            Log($"已添加进程监控: {name}");
+        }
+
+        private void ProcessEnabled_Changed(object sender, RoutedEventArgs e)
+        {
+            SaveProcessList();
+        }
+
+        private void BtnDeleteProcess_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as System.Windows.Controls.Button;
+            var vm = button?.Tag as ProcessViewModel;
+            if (vm != null)
+            {
+                _processList.Remove(vm);
+                SaveProcessList();
+                Log($"已删除进程监控: {vm.Name}");
+            }
+        }
+
+        private void SaveProcessList()
+        {
+            _config.WatchProcesses.Clear();
+            foreach (var vm in _processList)
+            {
+                _config.WatchProcesses.Add(vm.ToProcessInfo());
+            }
+            SaveConfig();
+        }
+
+        #endregion
+
+        #region Version Update
+
+        private void InitVersionUpdate()
+        {
+            var asm = System.Reflection.Assembly.GetExecutingAssembly();
+            var ver = asm.GetName().Version;
+            txtLocalVersion.Text = $"{ver.Major}.{ver.Minor}.{ver.Build}";
+
+            if (!string.IsNullOrWhiteSpace(_config.LastCheckTime))
+            {
+                txtLastCheckTime.Text = $"上次检查时间: {_config.LastCheckTime} | 检查间隔: {_config.CheckIntervalMinutes} 分钟";
+            }
+
+            chkAutoStart.IsChecked = _config.AutoStart;
+
+            chkAutoCheck.IsChecked = _config.CheckIntervalMinutes > 0;
+            if (_config.CheckIntervalMinutes > 0)
+            {
+                chkAutoCheck.Content = $"启用定时检查（每{_config.CheckIntervalMinutes}分钟）";
+                _updateTimer = new System.Windows.Threading.DispatcherTimer();
+                _updateTimer.Interval = TimeSpan.FromMinutes(_config.CheckIntervalMinutes);
+                _updateTimer.Tick += (s, ev) => CheckForUpdate();
+                _updateTimer.Start();
+            }
+        }
+
+        private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e)
+        {
+            btnCheckUpdate.IsEnabled = false;
+            btnCheckUpdate.Content = "检查中...";
+            await Task.Run(() => CheckForUpdate());
+            btnCheckUpdate.IsEnabled = true;
+            btnCheckUpdate.Content = "立即检查";
+        }
+
+        private void CheckForUpdate()
+        {
+            try
+            {
+                string cloudPath = _config.CloudPath;
+                if (string.IsNullOrWhiteSpace(cloudPath))
+                {
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端路径未配置)";
+                        txtCloudVersion.Text = "未配置";
+                    });
+                    _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    SaveConfig();
+                    return;
+                }
+
+                string driveLetter = "Y:";
+                if (!Directory.Exists(driveLetter + "\\"))
+                {
+                    string userPass = "";
+                    if (!string.IsNullOrWhiteSpace(_config.CloudUser))
+                    {
+                        userPass = $" /user:{_config.CloudUser}";
+                        if (!string.IsNullOrWhiteSpace(_config.CloudPassword))
+                            userPass += $" {_config.CloudPassword}";
+                    }
+
+                    var psi = new ProcessStartInfo("net", $"use {driveLetter} {cloudPath}{userPass}")
+                    {
+                        CreateNoWindow = true,
+                        UseShellExecute = false,
+                        RedirectStandardOutput = true,
+                        RedirectStandardError = true
+                    };
+                    var proc = Process.Start(psi);
+                    proc?.WaitForExit(10000);
+                }
+
+                string jsonPath = Path.Combine(driveLetter + "\\", "version.json");
+                if (!File.Exists(jsonPath))
+                {
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端不可达)";
+                        txtCloudVersion.Text = "不可达";
+                    });
+                    _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                    SaveConfig();
+                    return;
+                }
+
+                string jsonText = File.ReadAllText(jsonPath);
+                var jss = new System.Web.Script.Serialization.JavaScriptSerializer();
+                var data = jss.Deserialize<dynamic>(jsonText);
+                string latestVersion = data["latest"]?.ToString() ?? "";
+
+                var versions = data["versions"] as Dictionary<string, object>;
+                string cloudDate = "";
+                string cloudNote = "";
+                if (versions != null && versions.ContainsKey(latestVersion))
+                {
+                    var verInfo = versions[latestVersion] as Dictionary<string, object>;
+                    if (verInfo != null)
+                    {
+                        cloudDate = verInfo.ContainsKey("date") ? verInfo["date"]?.ToString() ?? "" : "";
+                        cloudNote = verInfo.ContainsKey("note") ? verInfo["note"]?.ToString() ?? "" : "";
+                    }
+                }
+
+                _latestCloudVersion = latestVersion;
+                _latestCloudDate = cloudDate;
+                _latestCloudNote = cloudNote;
+
+                var localVer = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
+                string localVerStr = $"{localVer.Major}.{localVer.Minor}.{localVer.Build}";
+
+                _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                SaveConfig();
+
+                Dispatcher.InvokeAsync(() =>
+                {
+                    txtCloudVersion.Text = latestVersion;
+                    txtLastCheckTime.Text = $"上次检查时间: {_config.LastCheckTime} | 检查间隔: {_config.CheckIntervalMinutes} 分钟";
+
+                    if (!string.IsNullOrWhiteSpace(latestVersion) && IsNewerVersion(latestVersion, localVerStr))
+                    {
+                        txtNewVersionInfo.Text = $"发现新版本 {latestVersion}{(string.IsNullOrWhiteSpace(cloudDate) ? "" : $" ({cloudDate})")}\n{cloudNote}";
+                        borderNewVersion.Visibility = Visibility.Visible;
+                        Log($"发现新版本: {latestVersion}");
+                        ShowUpdateDialog(latestVersion, cloudDate, cloudNote);
+                    }
+                    else
+                    {
+                        borderNewVersion.Visibility = Visibility.Collapsed;
+                        Log($"版本检查: 已是最新版本 (本地 {localVerStr}, 云端 {latestVersion})");
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                Dispatcher.InvokeAsync(() =>
+                {
+                    Log($"版本检查失败: {ex.Message}");
+                    txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (检查失败)";
+                });
+                _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                SaveConfig();
+            }
+        }
+
+        private bool IsNewerVersion(string cloudVer, string localVer)
+        {
+            try
+            {
+                var cv = new Version(cloudVer);
+                var lv = new Version(localVer);
+                return cv > lv;
+            }
+            catch
+            {
+                return string.Compare(cloudVer, localVer, StringComparison.OrdinalIgnoreCase) > 0;
+            }
+        }
+
+        private void ShowUpdateDialog(string version, string date, string note)
+        {
+            string msg = $"发现新版本 {version}";
+            if (!string.IsNullOrWhiteSpace(date))
+                msg += $"\n更新日期: {date}";
+            if (!string.IsNullOrWhiteSpace(note))
+                msg += $"\n\n{note}";
+            msg += "\n\n是否立即更新？（将下载更新并重启程序）";
+
+            var result = MessageBox.Show(msg, "发现新版本",
+                MessageBoxButton.YesNo, MessageBoxImage.Information);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                StartUpdateDownload(version);
+            }
+        }
+
+        private async void StartUpdateDownload(string version)
+        {
+            Log($"开始下载更新 {version}...");
+            btnCheckUpdate.IsEnabled = false;
+
+            await Task.Run(() =>
+            {
+                try
+                {
+                    string baseDir = Path.GetDirectoryName(
+                        System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    string appRoot = Path.GetFullPath(Path.Combine(baseDir, "..", ".."));
+                    string tempDir = Path.Combine(appRoot, "versions", ".temp");
+
+                    if (Directory.Exists(tempDir))
+                        Directory.Delete(tempDir, true);
+                    Directory.CreateDirectory(tempDir);
+
+                    string cloudVerPath = Path.Combine("Y:", version);
+                    CopyDirectory(cloudVerPath, tempDir);
+
+                    if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
+                    {
+                        Dispatcher.InvokeAsync(() =>
+                            Log("更新下载失败: 云端版本文件不完整"));
+                        return;
+                    }
+
+                    string batPath = Path.Combine(appRoot, "update.bat");
+                    string batContent = GenerateUpdateBat(appRoot, version);
+                    File.WriteAllText(batPath, batContent, System.Text.Encoding.UTF8);
+
+                    Dispatcher.InvokeAsync(() =>
+                    {
+                        Log("更新已下载，即将退出并执行更新...");
+                        var timer = new System.Windows.Threading.DispatcherTimer();
+                        timer.Interval = TimeSpan.FromSeconds(1);
+                        timer.Tick += (s, args) =>
+                        {
+                            timer.Stop();
+                            Process.Start(new ProcessStartInfo(batPath)
+                            {
+                                UseShellExecute = true,
+                                CreateNoWindow = false,
+                                WorkingDirectory = appRoot
+                            });
+                            _notifyIcon.Visible = false;
+                            _notifyIcon.Dispose();
+                            Application.Current.Shutdown();
+                        };
+                        timer.Start();
+                    });
+                }
+                catch (Exception ex)
+                {
+                    Dispatcher.InvokeAsync(() =>
+                        Log($"更新下载失败: {ex.Message}"));
+                }
+            });
+        }
+
+        private string GenerateUpdateBat(string appRoot, string version)
+        {
+            string versionsDir = Path.Combine(appRoot, "versions");
+            string newVerDir = Path.Combine(versionsDir, version);
+            string tempDir = Path.Combine(versionsDir, ".temp");
+            string backupDir = Path.Combine(appRoot, "backup");
+            string launcherPath = Path.Combine(appRoot, "Launcher.exe");
+
+            return $@"@echo off
+chcp 65001 >nul
+echo 正在更新 poco运维工具 到版本 {version}...
+
+timeout /t 2 /nobreak >nul
+
+taskkill /f /im MoveImageForm.exe >nul 2>&1
+
+if exist ""{newVerDir}"" (
+    if not exist ""{backupDir}"" mkdir ""{backupDir}""
+    robocopy ""{newVerDir}"" ""{backupDir}\{version}.bak"" /E /MOVE >nul 2>&1
+)
+
+robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE >nul 2>&1
+
+rd /s /q ""{tempDir}"" 2>nul
+
+if exist ""{launcherPath}"" (
+    start """" ""{launcherPath}""
+) else (
+    start """" ""{Path.Combine(newVerDir, "MoveImageForm.exe")}""
+)
+
+del ""%~f0"" & exit
+";
+        }
+
+        private void CopyDirectory(string sourceDir, string destDir)
+        {
+            if (!Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
+            foreach (var file in Directory.GetFiles(sourceDir))
+            {
+                string destFile = Path.Combine(destDir, Path.GetFileName(file));
+                File.Copy(file, destFile, true);
+            }
+
+            foreach (var dir in Directory.GetDirectories(sourceDir))
+            {
+                string destSubDir = Path.Combine(destDir, Path.GetFileName(dir));
+                CopyDirectory(dir, destSubDir);
+            }
+        }
+
+        private void ChkAutoCheck_Changed(object sender, RoutedEventArgs e)
+        {
+            if (chkAutoCheck.IsChecked == true)
+            {
+                _config.CheckIntervalMinutes = 30;
+                if (_updateTimer == null)
+                {
+                    _updateTimer = new System.Windows.Threading.DispatcherTimer();
+                    _updateTimer.Interval = TimeSpan.FromMinutes(_config.CheckIntervalMinutes);
+                    _updateTimer.Tick += (s, ev) => CheckForUpdate();
+                }
+                _updateTimer.Start();
+                chkAutoCheck.Content = $"启用定时检查（每{_config.CheckIntervalMinutes}分钟）";
+                Log("已启用定时版本检查（每30分钟）");
+            }
+            else
+            {
+                _config.CheckIntervalMinutes = 0;
+                _updateTimer?.Stop();
+                chkAutoCheck.Content = "启用定时检查（每30分钟）";
+                Log("已关闭定时版本检查");
+            }
+            SaveConfig();
+        }
+
+        private void ChkAutoStart_Changed(object sender, RoutedEventArgs e)
+        {
+            _config.AutoStart = chkAutoStart.IsChecked == true;
+            SetAutoStart(_config.AutoStart);
+            SaveConfig();
+        }
+
+        private void SetAutoStart(bool enable)
+        {
+            try
+            {
+                string appName = "poco运维工具";
+                string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                string launcherPath = Path.Combine(
+                    Path.GetDirectoryName(exePath), "..", "..", "Launcher.exe");
+                string autoStartPath = Path.GetFullPath(launcherPath);
+
+                var regKey = Registry.CurrentUser.OpenSubKey(
+                    @"Software\Microsoft\Windows\CurrentVersion\Run", true);
+
+                if (enable)
+                {
+                    if (regKey != null)
+                    {
+                        if (File.Exists(autoStartPath))
+                            regKey.SetValue(appName, $"\"{autoStartPath}\"");
+                        else
+                            regKey.SetValue(appName, $"\"{exePath}\"");
+                    }
+                    Log("已设置开机自启动");
+                }
+                else
+                {
+                    regKey?.DeleteValue(appName, false);
+                    Log("已取消开机自启动");
+                }
+            }
+            catch (Exception ex)
+            {
+                Log($"设置开机自启动失败: {ex.Message}");
+            }
+        }
+
+        #endregion
 
         #region Configuration Management
 

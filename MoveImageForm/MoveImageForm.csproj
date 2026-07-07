@@ -48,6 +48,7 @@
     </Reference>
     <Reference Include="System.Drawing" />
     <Reference Include="System.Windows.Forms" />
+    <Reference Include="System.Web.Extensions" />
     <Reference Include="WindowsBase" />
     <Reference Include="PresentationCore" />
     <Reference Include="PresentationFramework" />
@@ -71,6 +72,7 @@
     </Compile>
     <Compile Include="AppConfig.cs" />
     <Compile Include="ProcessInfo.cs" />
+    <Compile Include="ProcessViewModel.cs" />
   </ItemGroup>
   <ItemGroup>
     <Compile Include="Properties\AssemblyInfo.cs">
