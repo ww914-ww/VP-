@@ -621,24 +621,4 @@ namespace MoveImageForm
         #endregion
     }
 
-    public class AppConfig
-    {
-        public string SourcePath { get; set; } = "";
-        public string DestPath { get; set; } = "";
-        public string SourcePath2 { get; set; } = "";
-        public string DestPath2 { get; set; } = "";
-        public string TransferMode { get; set; } = "Cut";
-
-        public bool EnableTimeRule { get; set; } = true;
-        public int TimeIntervalSeconds { get; set; } = 60;
-
-        public bool EnableSizeRule { get; set; } = false;
-        public long SizeLimitMB { get; set; } = 100;
-
-        public bool EnableCountRule { get; set; } = false;
-        public int CountLimit { get; set; } = 1000;
-
-        public bool EnableEmptyFolderRule { get; set; } = false;
-        public double EmptyFolderHours { get; set; } = 24.0;
-    }
 }
