@@ -1,0 +1,348 @@
+================================================================================
+  poco运维工具 — 客户机安装部署指南
+  版本: v1.0.0 | 日期: 2026-07-07
+================================================================================
+
+适用范围: Windows 7 / Windows 10 / Windows 11 一体机或工控机
+
+================================================================================
+一、部署前检查
+================================================================================
+
+1.1 检查 .NET Framework 4.7.2 是否已安装
+----------------------------------------------------------------------
+
+  方法A（推荐）: 打开控制面板 → 程序和功能 → 搜索 ".NET Framework"
+  找到 ".NET Framework 4.7.2" 或更高版本即为已安装。
+
+  方法B: 检查组策略/注册表
+  打开运行 (Win+R) → 输入 regedit → 定位到:
+  HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\NET Framework Setup\NDP\v4\Full
+  查看 Release 项，数值 >= 461808 表示 4.7.2 已安装。
+
+  如果未安装，下载安装:
+  https://dotnet.microsoft.com/download/dotnet-framework/net472
+  选择 Runtime 版本（不是 Developer Pack），安装后重启电脑。
+
+1.2 检查目标磁盘和目录
+----------------------------------------------------------------------
+
+  确认客户机上有 D: 盘，且剩余空间 > 200MB。
+  打开资源管理器，确认 D:\ 可以正常访问。
+
+1.3 检查网络（如果使用云端更新功能）
+----------------------------------------------------------------------
+
+  需要能 ping 通云端文件服务器:
+    Win+R → cmd → ping 192.168.1.100
+
+  需要能访问 SMB 共享:
+    Win+R → cmd → net view \\192.168.1.100
+
+  如果 net view 失败，检查:
+  - 客户机和服务器是否在同一网段
+  - Windows 防火墙是否阻止了 445 端口
+  - SMB 1.0/CIFS 文件共享支持是否已启用
+    (控制面板 → 程序和功能 → 启用或关闭 Windows 功能 → SMB 1.0)
+
+================================================================================
+二、文件部署
+================================================================================
+
+2.1 部署目录结构
+----------------------------------------------------------------------
+
+  在客户机 D:\ 盘下创建 D:\App 文件夹:
+
+  D:\App\
+  ├── Launcher.exe                       ← 启动器(用户入口)
+  ├── config.xml                         ← 配置文件(见第三步)
+  └── versions\
+      └── 1.0.0\                         ← 当前版本号
+          ├── MoveImageForm.exe           ← 主程序
+          ├── MoveImageForm.exe.config   ← 主程序配置
+          └── zh-Hans\                    ← 中文资源文件夹(如有)
+
+2.2 拷贝步骤
+----------------------------------------------------------------------
+
+  第1步: 在客户机创建文件夹
+    打开资源管理器 → D:\ → 新建文件夹 "App"
+    D:\App\ 下再新建文件夹 "versions"
+    D:\App\versions\ 下再新建文件夹 "1.0.0"
+
+  第2步: 拷贝启动器
+    将开发机上的 Launcher.exe 复制到 D:\App\
+    将开发机上的 Launcher.exe.config 复制到 D:\App\
+
+  第3步: 拷贝主程序
+    将开发机上的 MoveImageForm.exe 复制到 D:\App\versions\1.0.0\
+    将开发机上的 MoveImageForm.exe.config 复制到 D:\App\versions\1.0.0\
+    将开发机上的 zh-Hans 文件夹(如果有)复制到 D:\App\versions\1.0.0\
+
+  第4步: 复制 config.xml (配置完成后见第三步)
+
+  第5步: 创建桌面快捷方式
+    右键桌面 → 新建快捷方式
+    目标: D:\App\Launcher.exe
+    名称: poco运维工具
+    可选: 右键快捷方式 → 属性 → 更改图标 → 选择 D:\App\versions\1.0.0\MoveImageForm.exe
+
+================================================================================
+三、配置文件 config.xml 详解
+================================================================================
+
+  config.xml 放在 D:\App\ 下，和 Launcher.exe 同级。
+
+  完整模板:
+
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+    <!-- ==================== 文件搬运配置 ==================== -->
+
+    <!-- 监控文件夹1: 要监控的源文件夹路径, 留空表示不使用 -->
+    <SourcePath>D:\Camera\Images</SourcePath>
+    <!-- 目标文件夹1: 文件被搬运到的目标文件夹 -->
+    <DestPath>D:\Archive\Images</DestPath>
+
+    <!-- 监控文件夹2: 第二组监控路径, 不使用时留空 -->
+    <SourcePath2></SourcePath2>
+    <DestPath2></DestPath2>
+
+    <!-- 处理方式: Cut=剪切(移动), Copy=复制 -->
+    <TransferMode>Cut</TransferMode>
+
+    <!-- 触发规则: 满足任一勾选条件即搬运 -->
+    <EnableTimeRule>true</EnableTimeRule>
+    <TimeIntervalSeconds>60</TimeIntervalSeconds>     <!-- 每隔N秒搬运 -->
+    <EnableSizeRule>false</EnableSizeRule>
+    <SizeLimitMB>100</SizeLimitMB>                    <!-- 文件总大小超过N MB搬运 -->
+    <EnableCountRule>false</EnableCountRule>
+    <CountLimit>1000</CountLimit>                     <!-- 文件数量超过N个搬运 -->
+
+    <!-- 清理规则: 搬运完成后, 删除超过N小时的空文件夹 -->
+    <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
+    <EmptyFolderHours>24</EmptyFolderHours>
+
+
+    <!-- ==================== 版本更新配置 ==================== -->
+
+    <!-- ★ 云端SMB共享路径 (最重要) -->
+    <CloudPath>\\192.168.1.100\AppUpdate</CloudPath>
+    <!-- ★ SMB用户名, 无认证则留空 -->
+    <CloudUser></CloudUser>
+    <!-- ★ SMB密码, 无认证则留空 -->
+    <CloudPassword></CloudPassword>
+
+    <!-- 定时检查间隔(分钟), 默认30 -->
+    <CheckIntervalMinutes>30</CheckIntervalMinutes>
+    <!-- 是否发现新版本后自动下载 -->
+    <AutoUpdate>false</AutoUpdate>
+    <!-- 是否开机自启动 (也可在程序内Tab3勾选) -->
+    <AutoStart>false</AutoStart>
+    <!-- 上次检查时间, 自动生成, 留空即可 -->
+    <LastCheckTime></LastCheckTime>
+
+
+    <!-- ==================== 进程监听配置 ==================== -->
+
+    <!-- 轮询间隔(秒), 默认5 -->
+    <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
+
+    <!-- 监控进程列表, 在程序Tab2界面中添加, 会自动写入这里 -->
+    <WatchProcesses />
+</Config>
+
+3.1 各配置项说明
+----------------------------------------------------------------------
+
+  【文件搬运】
+  SourcePath/DestPath     监控文件夹和目标文件夹的绝对路径
+  TransferMode            Cut=剪切(移动), Copy=复制
+  EnableTimeRule          开启按时间间隔搬运
+  TimeIntervalSeconds     时间间隔(秒)，配合上面使用
+  EnableSizeRule          开启按文件总大小触发搬运
+  SizeLimitMB             触发阈值(MB)
+  EnableCountRule         开启按文件数量触发搬运
+  CountLimit              触发阈值(个)
+  EnableEmptyFolderRule   搬运后清理空文件夹
+  EmptyFolderHours        空文件夹保留小时数，超过后删除
+
+  【版本更新】
+  CloudPath              ★云端SMB路径, 格式 \\服务器IP\共享文件夹名
+  CloudUser/Password     SMB账号密码, 无密码的共享留空即可
+  CheckIntervalMinutes    定时检查间隔(分钟)
+  AutoUpdate              是否自动下载(建议false, 手动更新更安全)
+  AutoStart               开机自启(写注册表, 也可在程序内勾选)
+
+  【进程监听】
+  ProcessCheckIntervalSeconds  轮询间隔(秒)
+  WatchProcesses              监控列表, 在程序UI中添加/删除
+
+3.2 最小化配置(第一次部署可用这个)
+----------------------------------------------------------------------
+
+  如果暂时只用来搬运文件，不连云端，用这个最小配置:
+
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+    <SourcePath>D:\Source</SourcePath>
+    <DestPath>D:\Dest</DestPath>
+    <SourcePath2></SourcePath2>
+    <DestPath2></DestPath2>
+    <TransferMode>Cut</TransferMode>
+    <EnableTimeRule>true</EnableTimeRule>
+    <TimeIntervalSeconds>60</TimeIntervalSeconds>
+    <EnableSizeRule>false</EnableSizeRule>
+    <SizeLimitMB>100</SizeLimitMB>
+    <EnableCountRule>false</EnableCountRule>
+    <CountLimit>1000</CountLimit>
+    <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
+    <EmptyFolderHours>24</EmptyFolderHours>
+    <CloudPath></CloudPath>
+    <CloudUser></CloudUser>
+    <CloudPassword></CloudPassword>
+    <CheckIntervalMinutes>30</CheckIntervalMinutes>
+    <AutoUpdate>false</AutoUpdate>
+    <AutoStart>false</AutoStart>
+    <LastCheckTime></LastCheckTime>
+    <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
+    <WatchProcesses />
+</Config>
+
+================================================================================
+四、搭建云端版本服务器
+================================================================================
+
+  如果你需要远程推送更新，才需要搭建云端。
+
+4.1 在服务器上创建共享文件夹
+----------------------------------------------------------------------
+
+  第1步: 在文件服务器上找一个位置，如 D:\AppUpdate\
+  第2步: 右键该文件夹 → 属性 → 共享 → 共享给 "Everyone" 读取权限
+  第3步: 记下共享路径，如 \\192.168.1.100\AppUpdate
+
+4.2 创建版本文件结构
+----------------------------------------------------------------------
+
+  \\192.168.1.100\AppUpdate\
+  ├── version.json            ← 版本信息文件(必须)
+  ├── 1.0.0\                  ← 版本文件夹, 放完整exe
+  │   ├── MoveImageForm.exe
+  │   ├── MoveImageForm.exe.config
+  │   ├── Launcher.exe
+  │   └── zh-Hans\
+  └── 1.0.1\                  ← 未来新版本
+      ├── MoveImageForm.exe
+      └── ...
+
+4.3 version.json 格式
+----------------------------------------------------------------------
+
+{
+    "latest": "1.0.0",
+    "versions": {
+        "1.0.0": {
+            "date": "2026-07-07",
+            "note": "初始版本: 文件搬运+进程监听+版本更新"
+        }
+    }
+}
+
+  字段说明:
+    latest    - 最新版本号, 客户机会比对这字段
+    versions  - 每个版本的元信息
+      date    - 发布日期
+      note    - 更新说明, 显示在客户机更新弹窗中
+
+4.4 发布新版本时的操作
+----------------------------------------------------------------------
+
+  第1步: 编译好新版 MoveImageForm.exe 和 Launcher.exe
+  第2步: 在云端创建新文件夹, 如 \\192.168.1.100\AppUpdate\1.0.1\
+  第3步: 把新版文件复制进去
+  第4步: 修改 version.json, 将 latest 改为 "1.0.1", 增加对应条目
+
+  客户机下次启动 Launcher 时就会自动检测到新版本。
+
+================================================================================
+五、验证部署
+================================================================================
+
+5.1 检查文件是否齐全
+----------------------------------------------------------------------
+
+  确认 D:\App\ 下有以下文件:
+    D:\App\Launcher.exe                   ← 一定存在
+    D:\App\config.xml                     ← 一定存在
+    D:\App\versions\1.0.0\MoveImageForm.exe ← 一定存在
+
+5.2 启动测试
+----------------------------------------------------------------------
+
+  双击 D:\App\Launcher.exe, 观察 Launcher 窗口:
+  - 如果 CloudPath 为空: 看到"无法连接云端，直接启动"后自动打开主程序
+  - 如果 CloudPath 有地址但连不上: 同样显示错误后直接启动
+  - 如果 CloudPath 正确: 显示"正在检查版本更新"然后启动
+
+  启动成功后应看到三Tab主界面:
+  Tab1 文件搬运 | Tab2 进程监听 | Tab3 版本更新
+
+5.3 进程监听测试
+----------------------------------------------------------------------
+
+  第1步: 切到 Tab2, 添加一个测试进程(如 notepad.exe)
+  第2步: 打开记事本 → 关掉记事本 → 应立即弹出"未运行"提醒窗口
+
+5.4 版本检查测试 (需有云端)
+----------------------------------------------------------------------
+
+  第1步: 切到 Tab3, 观察"当前本地版本"和"云端最新版本"
+  第2步: 点击"立即检查", 看是否正常对接到云端
+
+================================================================================
+六、常见问题
+================================================================================
+
+Q1: 双击 Launcher.exe 没有反应或闪退?
+  检查: 是否装了 .NET Framework 4.7.2
+  检查: D:\App\versions\1.0.0\MoveImageForm.exe 是否存在
+  检查: config.xml 格式是否正确(不要丢标签或乱码)
+
+Q2: 启动后提示"找不到主程序文件"?
+  Launcher 找不到 MoveImageForm.exe，检查:
+  - D:\App\versions\1.0.0\MoveImageForm.exe 是否存在
+  - config.xml 是否在 D:\App\ 下
+  - 文件夹名称是否为 "1.0.0" (必须和程序集版本一致)
+
+Q3: 云端版本检查失败?
+  检查: 客户机能 ping 通服务器 IP
+  检查: \\服务器IP\AppUpdate\ 能否在资源管理器直接打开
+  检查: version.json 是否存在且格式正确
+  提示: 如果客户机无法访问SMB, 试试在Windows凭据管理器中添加凭据
+    (控制面板 → 凭据管理器 → Windows凭据 → 添加Windows凭据)
+
+Q4: 如何卸载?
+  直接删除 D:\App 文件夹和桌面快捷方式即可。
+  如果设置了开机自启动, 还需删除注册表项:
+    HKEY_CURRENT_USER\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\poco运维工具
+
+Q5: 如何手动更新(不经过云端)?
+  关闭程序 → 替换 D:\App\versions\1.0.0\ 下的 exe 文件 → 重新启动
+
+================================================================================
+七、部署检查清单 (每条都要确认)
+================================================================================
+
+  [ ] 客户机已安装 .NET Framework 4.7.2
+  [ ] D:\App 目录已创建
+  [ ] Launcher.exe 已复制到 D:\App\
+  [ ] MoveImageForm.exe 已复制到 D:\App\versions\1.0.0\
+  [ ] config.xml 已创建并填写了正确的参数
+  [ ] 桌面快捷方式指向 D:\App\Launcher.exe
+  [ ] 双击快捷方式能正常启动看到主界面
+  [ ] (可选)云端 SMB 共享可访问, version.json 正确
+  [ ] (可选)有新版时更新流程跑通
+
+================================================================================

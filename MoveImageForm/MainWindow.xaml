@@ -107,24 +107,41 @@
             <Grid Margin="5">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
                 <!-- 添加栏 -->
                 <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                    <TextBlock Text="进程名:" VerticalAlignment="Center"/>
-                    <TextBox x:Name="txtProcessName" Width="150" Margin="5,0"/>
-                    <TextBlock Text="启动路径:" VerticalAlignment="Center" Margin="10,0,0,0"/>
-                    <TextBox x:Name="txtProcessPath" Width="150" Margin="5,0"/>
+                    <TextBlock Text="启动路径:" VerticalAlignment="Center"/>
+                    <TextBox x:Name="txtProcessPath" Width="280" Margin="5,0"/>
+                    <Button Content="浏览..." Width="50" Margin="5,0,0,0" Click="BtnBrowseProcessPath_Click"/>
                     <Button x:Name="btnAddProcess" Content="添加" Width="50" Margin="10,0,0,0" Click="BtnAddProcess_Click"/>
                 </StackPanel>
 
+                <!-- 监控间隔 -->
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+                    <TextBlock Text="监控间隔:" VerticalAlignment="Center"/>
+                    <ComboBox x:Name="cmbProcessInterval" Width="60" Margin="5,0"
+                              SelectionChanged="CmbProcessInterval_Changed">
+                        <ComboBoxItem Content="1"/>
+                        <ComboBoxItem Content="2"/>
+                        <ComboBoxItem Content="3"/>
+                        <ComboBoxItem Content="5"/>
+                        <ComboBoxItem Content="10"/>
+                        <ComboBoxItem Content="15"/>
+                        <ComboBoxItem Content="30"/>
+                        <ComboBoxItem Content="60"/>
+                    </ComboBox>
+                    <TextBlock Text="秒" VerticalAlignment="Center"/>
+                </StackPanel>
+
                 <!-- 进程列表 -->
-                <DataGrid x:Name="dgProcesses" Grid.Row="1" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
+                <DataGrid x:Name="dgProcesses" Grid.Row="2" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
                     <DataGrid.Columns>
-                        <DataGridTextColumn Header="进程名" Binding="{Binding Name}" Width="140"/>
-                        <DataGridTextColumn Header="启动路径" Binding="{Binding Path}" Width="180"/>
+                        <DataGridTextColumn Header="进程" Binding="{Binding Name}" Width="80"/>
+                        <DataGridTextColumn Header="启动路径" Binding="{Binding Path}" Width="240"/>
                         <DataGridTemplateColumn Header="运行状态" Width="80">
                             <DataGridTemplateColumn.CellTemplate>
                                 <DataTemplate>
@@ -151,8 +168,8 @@
                 </DataGrid>
 
                 <!-- 说明 -->
-                <TextBlock Grid.Row="2" Margin="0,8,0,0" FontSize="11" Foreground="#888">
-                    每 5 秒轮询一次进程状态。进程不在运行中时，通过右下角气泡提醒 + 日志记录。配置保存到 config.xml 中，启动时自动加载并开始监控。
+                <TextBlock Grid.Row="3" Margin="0,8,0,0" FontSize="11" Foreground="#888">
+                    按设定的间隔轮询进程状态。进程未运行时弹出提醒，可选择启动或忽略。配置保存到 config.xml 中，启动时自动加载并开始监控。
                 </TextBlock>
             </Grid>
         </TabItem>

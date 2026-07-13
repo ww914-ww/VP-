@@ -1,0 +1,54 @@
+<h2>Tab 2: 进程监听 — 界面设计</h2>
+<p class="subtitle">监控指定进程是否运行，挂掉时弹提醒。支持手动添加/删除/启停</p>
+
+<div class="mockup">
+  <div class="mockup-header">进程监听 Tab 布局</div>
+  <div class="mockup-body">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+      <span style="font-weight:bold;">进程名:</span>
+      <input class="mock-input" placeholder="例如: VisionPlus.exe" style="width:180px;">
+      <span style="font-weight:bold;margin-left:10px;">启动路径:</span>
+      <input class="mock-input" placeholder="例如: D:\6SVI\VisionPlus.exe" style="width:180px;">
+      <button class="mock-button">添加</button>
+    </div>
+
+    <table style="width:100%;border-collapse:collapse;font-size:13px;">
+      <tr style="background:#f0f0f0;">
+        <th style="padding:6px;text-align:left;border:1px solid #ddd;">进程名</th>
+        <th style="padding:6px;text-align:left;border:1px solid #ddd;">启动路径</th>
+        <th style="padding:6px;text-align:center;border:1px solid #ddd;">运行状态</th>
+        <th style="padding:6px;text-align:center;border:1px solid #ddd;">监控</th>
+        <th style="padding:6px;text-align:center;border:1px solid #ddd;">操作</th>
+      </tr>
+      <tr>
+        <td style="padding:6px;border:1px solid #ddd;">VisionPlus.exe</td>
+        <td style="padding:6px;border:1px solid #ddd;color:#888;">D:\6SVI\VisionPlus.exe</td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;color:green;">● 运行中</td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;"><input type="checkbox" checked></td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;"><a href="#" style="color:#d00;">删除</a></td>
+      </tr>
+      <tr>
+        <td style="padding:6px;border:1px solid #ddd;">6SVI_Taper.exe</td>
+        <td style="padding:6px;border:1px solid #ddd;color:#888;">D:\6SVI\6SVI_Taper.exe</td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;color:red;">● 未运行</td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;"><input type="checkbox" checked></td>
+        <td style="padding:6px;border:1px solid #ddd;text-align:center;"><a href="#" style="color:#d00;">删除</a></td>
+      </tr>
+    </table>
+
+    <div style="margin-top:8px;font-size:12px;color:#888;">
+      <p>监控逻辑: 每 5 秒轮询一次进程列表，发现已启用监控的进程不在运行中 → <span style="color:red;">右下角气泡提醒</span> + <span style="color:#0078d4;">日志记录</span></p>
+      <p>配置持久化: 进程列表保存到 config.xml 中，启动时自动加载并开始监控</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>设计要点</h3>
+  <ul>
+    <li>进程列表存 config.xml，启动自动加载</li>
+    <li>「监控」列 = 开关，关掉就不检查这个进程</li>
+    <li>进程挂了 → 系统托盘气泡 + 日志记录（不自动重启，只提醒，按你之前说的）</li>
+    <li>每 5 秒轮询一次，不影响主界面响应</li>
+  </ul>
+</div>

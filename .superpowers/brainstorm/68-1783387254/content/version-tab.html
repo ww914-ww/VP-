@@ -1,0 +1,57 @@
+<h2>Tab 3: 版本更新 — 界面设计</h2>
+<p class="subtitle">显示版本信息，手动检查/定时检查更新，弹窗提示</p>
+
+<div class="mockup">
+  <div class="mockup-header">版本更新 Tab 布局</div>
+  <div class="mockup-body">
+    <div style="display:flex;gap:16px;margin-bottom:12px;">
+      <div style="flex:1;background:#f5f5f5;padding:12px;border-radius:4px;text-align:center;">
+        <div style="font-size:24px;font-weight:bold;color:#0078d4;">1.0.0</div>
+        <div style="font-size:11px;color:#888;">当前本地版本</div>
+      </div>
+      <div style="flex:1;background:#f5f5f5;padding:12px;border-radius:4px;text-align:center;">
+        <div style="font-size:24px;font-weight:bold;color:#107c10;">1.0.1</div>
+        <div style="font-size:11px;color:#888;">云端最新版本</div>
+      </div>
+    </div>
+
+    <div style="background:#e8f4e8;padding:8px 12px;border-radius:4px;margin-bottom:12px;font-size:13px;">
+      <strong>发现新版本 1.0.1 (2026-07-05)</strong><br>
+      修复了文件搬运崩溃问题
+    </div>
+
+    <div style="margin-bottom:12px;font-size:13px;color:#888;">
+      上次检查时间: 2026-07-06 14:30:00 &nbsp;|&nbsp; 检查间隔: 30 分钟
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button class="mock-button" style="background:#0078d4;color:#fff;padding:8px 20px;">立即检查</button>
+      <label style="font-size:13px;">
+        <input type="checkbox" checked> 启用定时检查（每30分钟）
+      </label>
+    </div>
+  </div>
+</div>
+
+<div style="margin-top:16px;">
+  <div class="mockup">
+    <div class="mockup-header">发现新版本时 — 弹窗提示（在主窗口之上弹出）</div>
+    <div class="mockup-body">
+      <div style="border:1px solid #ddd;padding:16px;max-width:380px;margin:0 auto;background:#fff;">
+        <h3 style="margin:0 0 8px;">发现新版本 1.0.1</h3>
+        <p style="color:#888;margin:0 0 12px;">更新日期: 2026-07-05</p>
+        <p style="margin:0 0 16px;">修复了文件搬运崩溃问题</p>
+        <div style="display:flex;gap:8px;">
+          <button style="background:#0078d4;color:#fff;border:none;padding:8px 16px;cursor:pointer;">立即更新</button>
+          <button style="border:1px solid #ccc;padding:8px 16px;background:#fff;cursor:pointer;">稍后提醒</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:12px;">
+  <h3>更新流程（启动器负责）</h3>
+  <p>用户点「立即更新」→ 下载到 versions\.temp\ → 写 update.bat → 退出程序 → bat 替换旧版 → 重启新版</p>
+  <p>主程序 Tab 只负责 <strong>展示 + 定时检查 + 弹窗提示</strong>，下载和替换由 Launcher 完成</p>
+</div>

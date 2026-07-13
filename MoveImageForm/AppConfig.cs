@@ -55,6 +55,9 @@ namespace MoveImageForm
         public string LastCheckTime { get; set; } = "";
 
         // ===== 进程监听（新增） =====
+        [XmlElement]
+        public int ProcessCheckIntervalSeconds { get; set; } = 5;
+
         [XmlArray("WatchProcesses")]
         [XmlArrayItem("Process")]
         public List<ProcessInfo> WatchProcesses { get; set; } = new List<ProcessInfo>();

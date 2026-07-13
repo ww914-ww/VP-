@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+    <SourcePath></SourcePath>
+    <DestPath></DestPath>
+    <SourcePath2></SourcePath2>
+    <DestPath2></DestPath2>
+    <TransferMode>Cut</TransferMode>
+    <EnableTimeRule>true</EnableTimeRule>
+    <TimeIntervalSeconds>60</TimeIntervalSeconds>
+    <EnableSizeRule>false</EnableSizeRule>
+    <SizeLimitMB>100</SizeLimitMB>
+    <EnableCountRule>false</EnableCountRule>
+    <CountLimit>1000</CountLimit>
+    <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
+    <EmptyFolderHours>24</EmptyFolderHours>
+    <CloudPath>\\172.16.22.138\Shared data\poco运维工具测试</CloudPath>
+    <CloudUser>IM01</CloudUser>
+    <CloudPassword>Poco@xg2024</CloudPassword>
+    <CheckIntervalMinutes>30</CheckIntervalMinutes>
+    <AutoUpdate>false</AutoUpdate>
+    <AutoStart>false</AutoStart>
+    <LastCheckTime></LastCheckTime>
+    <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
+    <WatchProcesses />
+</Config>

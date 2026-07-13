@@ -24,6 +24,7 @@ namespace MoveImageForm
         // 进程监听
         private System.Windows.Threading.DispatcherTimer _processTimer;
         private ObservableCollection<ProcessViewModel> _processList;
+        private Dictionary<ProcessViewModel, Process> _watchedProcesses = new Dictionary<ProcessViewModel, Process>();
 
         // 版本更新
         private System.Windows.Threading.DispatcherTimer _updateTimer;
@@ -535,12 +536,25 @@ namespace MoveImageForm
             }
             dgProcesses.ItemsSource = _processList;
 
+            int interval = _config.ProcessCheckIntervalSeconds;
+            if (interval < 1 || interval > 60) interval = 5;
+
+            int[] intervalValues = { 1, 2, 3, 5, 10, 15, 30, 60 };
+            int idx = Array.IndexOf(intervalValues, interval);
+            cmbProcessInterval.SelectedIndex = idx >= 0 ? idx : 3;
+
             _processTimer = new System.Windows.Threading.DispatcherTimer();
-            _processTimer.Interval = TimeSpan.FromSeconds(5);
+            _processTimer.Interval = TimeSpan.FromSeconds(interval);
             _processTimer.Tick += ProcessTimer_Tick;
             _processTimer.Start();
 
             CheckAllProcesses();
+
+            foreach (var proc in _processList)
+            {
+                if (proc.Enabled && !proc.IsRunning)
+                    ShowProcessDownDialog(proc);
+            }
         }
 
         private void ProcessTimer_Tick(object sender, EventArgs e)
@@ -551,57 +565,156 @@ namespace MoveImageForm
         private void CheckAllProcesses()
         {
             foreach (var proc in _processList)
+                CheckSingleProcess(proc);
+        }
+
+        private void CheckSingleProcess(ProcessViewModel proc)
+        {
+            if (!proc.Enabled)
             {
-                if (!proc.Enabled)
+                proc.IsRunning = false;
+                UnwatchProcess(proc);
+                return;
+            }
+
+            try
+            {
+                string procName = Path.GetFileNameWithoutExtension(proc.Path);
+                var processes = Process.GetProcessesByName(procName);
+                bool wasRunning = proc.IsRunning;
+                proc.IsRunning = processes.Length > 0;
+
+                if (proc.IsRunning && !_watchedProcesses.ContainsKey(proc))
                 {
-                    proc.IsRunning = false;
-                    continue;
+                    var p = processes[0];
+                    p.EnableRaisingEvents = true;
+                    p.Exited += (s, e) =>
+                    {
+                        Dispatcher.BeginInvoke(new Action(() => OnWatchedProcessExited(proc)));
+                    };
+                    _watchedProcesses[proc] = p;
                 }
 
+                if (wasRunning && !proc.IsRunning)
+                {
+                    Log($"{proc.Name}（{procName}）已停止运行");
+                    ShowProcessDownDialog(proc);
+                }
+            }
+            catch
+            {
+                proc.IsRunning = false;
+            }
+        }
+
+        private void UnwatchProcess(ProcessViewModel proc)
+        {
+            if (_watchedProcesses.TryGetValue(proc, out var p))
+            {
+                try { p.Dispose(); } catch { }
+                _watchedProcesses.Remove(proc);
+            }
+        }
+
+        private void OnWatchedProcessExited(ProcessViewModel proc)
+        {
+            UnwatchProcess(proc);
+            proc.IsRunning = false;
+            string procName = Path.GetFileNameWithoutExtension(proc.Path);
+            Log($"{proc.Name}（{procName}）已停止运行");
+            ShowProcessDownDialog(proc);
+        }
+
+        private void ShowProcessDownDialog(ProcessViewModel proc)
+        {
+            string procName = Path.GetFileNameWithoutExtension(proc.Path);
+            string msg = $"{proc.Name}（{procName}）未运行，是否立即启动？";
+
+            var result = MessageBox.Show(msg, "进程监听",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning);
+
+            if (result == MessageBoxResult.Yes)
+            {
                 try
                 {
-                    string procName = Path.GetFileNameWithoutExtension(proc.Name);
-                    var processes = Process.GetProcessesByName(procName);
-                    bool wasRunning = proc.IsRunning;
-                    proc.IsRunning = processes.Length > 0;
-
-                    if (wasRunning && !proc.IsRunning)
+                    if (!string.IsNullOrWhiteSpace(proc.Path) && File.Exists(proc.Path))
                     {
-                        string msg = $"进程 {proc.Name} 已停止运行";
-                        Log(msg);
-                        Dispatcher.InvokeAsync(() =>
+                        Process.Start(new ProcessStartInfo(proc.Path)
                         {
-                            _notifyIcon.ShowBalloonTip(3000, "进程监听", msg,
-                                System.Windows.Forms.ToolTipIcon.Warning);
+                            UseShellExecute = true,
+                            WorkingDirectory = Path.GetDirectoryName(proc.Path)
                         });
+                        Log($"已启动进程: {proc.Name}（{procName}）");
+                    }
+                    else
+                    {
+                        MessageBox.Show($"找不到可执行文件:\n{proc.Path}", "启动失败",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                        Log($"启动失败: 找不到文件 {proc.Path}");
                     }
                 }
-                catch
+                catch (Exception ex)
                 {
-                    proc.IsRunning = false;
+                    MessageBox.Show($"启动失败: {ex.Message}", "启动失败",
+                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    Log($"启动进程 {proc.Name} 失败: {ex.Message}");
+                }
+            }
+            else
+            {
+                Log($"用户选择忽略: {proc.Name}（{procName}）未运行");
+            }
+        }
+
+        private void CmbProcessInterval_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        {
+            if (_config == null) return;
+
+            if (cmbProcessInterval.SelectedItem is System.Windows.Controls.ComboBoxItem item
+                && int.TryParse(item.Content.ToString(), out int seconds))
+            {
+                _config.ProcessCheckIntervalSeconds = seconds;
+                if (_processTimer != null)
+                    _processTimer.Interval = TimeSpan.FromSeconds(seconds);
+                SaveConfig();
+                Log($"监控间隔已更新为 {seconds} 秒");
+            }
+        }
+
+        private void BtnBrowseProcessPath_Click(object sender, RoutedEventArgs e)
+        {
+            using (var dialog = new System.Windows.Forms.OpenFileDialog())
+            {
+                dialog.Title = "选择可执行文件";
+                dialog.Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*";
+                dialog.CheckFileExists = true;
+                if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+                {
+                    txtProcessPath.Text = dialog.FileName;
                 }
             }
         }
 
         private void BtnAddProcess_Click(object sender, RoutedEventArgs e)
         {
-            string name = txtProcessName.Text.Trim();
             string path = txtProcessPath.Text.Trim();
 
-            if (string.IsNullOrWhiteSpace(name))
+            if (string.IsNullOrWhiteSpace(path))
             {
-                MessageBox.Show("请输入进程名！");
+                MessageBox.Show("请选择可执行文件路径！");
                 return;
             }
 
             foreach (var p in _processList)
             {
-                if (string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase))
                 {
-                    MessageBox.Show($"进程 {name} 已在监控列表中！");
+                    MessageBox.Show($"该路径已在监控列表中（{p.Name}）！");
                     return;
                 }
             }
+
+            string name = $"进程{_processList.Count + 1}";
 
             var vm = new ProcessViewModel
             {
@@ -613,9 +726,12 @@ namespace MoveImageForm
             _processList.Add(vm);
             SaveProcessList();
 
-            txtProcessName.Clear();
             txtProcessPath.Clear();
-            Log($"已添加进程监控: {name}");
+            Log($"已添加进程监控: {name}（{Path.GetFileName(path)}）");
+
+            CheckSingleProcess(vm);
+            if (!vm.IsRunning)
+                ShowProcessDownDialog(vm);
         }
 
         private void ProcessEnabled_Changed(object sender, RoutedEventArgs e)
@@ -629,6 +745,7 @@ namespace MoveImageForm
             var vm = button?.Tag as ProcessViewModel;
             if (vm != null)
             {
+                UnwatchProcess(vm);
                 _processList.Remove(vm);
                 SaveProcessList();
                 Log($"已删除进程监控: {vm.Name}");
@@ -671,6 +788,8 @@ namespace MoveImageForm
                 _updateTimer.Tick += (s, ev) => CheckForUpdate();
                 _updateTimer.Start();
             }
+
+            Task.Run(() => CheckForUpdate());
         }
 
         private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e)
@@ -710,7 +829,7 @@ namespace MoveImageForm
                             userPass += $" {_config.CloudPassword}";
                     }
 
-                    var psi = new ProcessStartInfo("net", $"use {driveLetter} {cloudPath}{userPass}")
+                    var psi = new ProcessStartInfo("net", $"use {driveLetter} \"{cloudPath}\"{userPass}")
                     {
                         CreateNoWindow = true,
                         UseShellExecute = false,
@@ -1013,7 +1132,15 @@ del ""%~f0"" & exit
 
         private string GetConfigFilePath()
         {
-            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.xml");
+            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+
+            string rootConfig = Path.Combine(baseDir, "..", "..", "config.xml");
+            string fullRootConfig = Path.GetFullPath(rootConfig);
+            if (File.Exists(fullRootConfig))
+                return fullRootConfig;
+
+            string localConfig = Path.Combine(baseDir, "config.xml");
+            return localConfig;
         }
 
         private void LoadConfig()

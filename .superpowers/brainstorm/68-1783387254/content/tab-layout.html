@@ -1,0 +1,37 @@
+<h2>Tab 布局方案对比</h2>
+<p class="subtitle">两种布局方式：顶部 Tab vs 左侧导航。窗口标题改为「poco运维工具」</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">方案 A: 顶部 Tab（推荐）</div>
+    <div class="mockup-body">
+      <div class="mock-nav" style="display:flex;gap:0;background:#e0e0e0;padding:0;margin-bottom:8px;">
+        <span style="background:#fff;padding:6px 16px;border-bottom:2px solid #0078d4;font-weight:bold;">文件搬运</span>
+        <span style="padding:6px 16px;color:#666;">进程监听</span>
+        <span style="padding:6px 16px;color:#666;">版本更新</span>
+      </div>
+      <div class="placeholder" style="height:120px;">当前 Tab 内容区域</div>
+      <p style="font-size:12px;color:#666;margin-top:8px;">Tab 在顶部，内容区在下，和 VS 设置面板一致。窗口 620x620</p>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">方案 B: 左侧导航</div>
+    <div class="mockup-body">
+      <div style="display:flex;gap:0;">
+        <div style="width:90px;background:#f0f0f0;padding:4px;min-height:130px;">
+          <div style="padding:8px;background:#0078d4;color:#fff;margin-bottom:2px;font-size:12px;">文件搬运</div>
+          <div style="padding:8px;font-size:12px;">进程监听</div>
+          <div style="padding:8px;font-size:12px;">版本更新</div>
+        </div>
+        <div class="placeholder" style="flex:1;min-height:130px;">内容区域</div>
+      </div>
+      <p style="font-size:12px;color:#666;margin-top:8px;">导航在左侧，类似 Win10 设置。窗口需要更宽</p>
+    </div>
+  </div>
+</div>
+
+<div class="section">
+  <h3>建议选 A</h3>
+  <p>顶部 Tab 改动最小（现有代码直接包进 TabControl），窗口尺寸不用大改，和原文档设计方案一致。</p>
+</div>

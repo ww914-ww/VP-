@@ -149,7 +149,7 @@ namespace Launcher
                         userPass += $" {_cloudPassword}";
                 }
 
-                var psi2 = new ProcessStartInfo("net", $"use {letter} {_cloudPath}{userPass}")
+                var psi2 = new ProcessStartInfo("net", $"use {letter} \"{_cloudPath}\"{userPass}")
                 {
                     CreateNoWindow = true,
                     UseShellExecute = false
