@@ -14,6 +14,7 @@
     <WarningLevel>4</WarningLevel>
     <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
     <Deterministic>true</Deterministic>
+    <ApplicationIcon>Resources\AppLogo.ico</ApplicationIcon>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
     <PlatformTarget>AnyCPU</PlatformTarget>
@@ -62,6 +63,10 @@
       <Generator>MSBuild:Compile</Generator>
       <SubType>Designer</SubType>
     </Page>
+    <Page Include="ProcessReminderDialog.xaml">
+      <Generator>MSBuild:Compile</Generator>
+      <SubType>Designer</SubType>
+    </Page>
     <Compile Include="App.xaml.cs">
       <DependentUpon>App.xaml</DependentUpon>
       <SubType>Code</SubType>
@@ -72,6 +77,11 @@
     </Compile>
     <Compile Include="AppConfig.cs" />
     <Compile Include="ProcessInfo.cs" />
+    <Compile Include="ProcessMonitorState.cs" />
+    <Compile Include="ProcessReminderDialog.xaml.cs">
+      <DependentUpon>ProcessReminderDialog.xaml</DependentUpon>
+      <SubType>Code</SubType>
+    </Compile>
     <Compile Include="ProcessViewModel.cs" />
   </ItemGroup>
   <ItemGroup>
@@ -99,6 +109,8 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="App.config" />
+    <Resource Include="Resources\AppLogo.ico" />
+    <Resource Include="Resources\AppLogo.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
 </Project>

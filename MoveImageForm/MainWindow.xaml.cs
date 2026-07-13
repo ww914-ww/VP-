@@ -25,6 +25,14 @@ namespace MoveImageForm
         private System.Windows.Threading.DispatcherTimer _processTimer;
         private ObservableCollection<ProcessViewModel> _processList;
         private Dictionary<ProcessViewModel, Process> _watchedProcesses = new Dictionary<ProcessViewModel, Process>();
+        private bool _isReminderDialogOpen;
+        private ProcessReminderDialog _activeReminderDialog;
+        private ProcessViewModel _activeReminderProcess;
+        private bool _suppressProcessEnabledHandler;
+        private DateTime _nextProcessCheckAt;
+        private DateTime _nextRemindAllowedAt;
+        private System.Windows.Threading.DispatcherTimer _countdownTimer;
+        private bool _isInitializingProcessMonitoring;
 
         // 版本更新
         private System.Windows.Threading.DispatcherTimer _updateTimer;
@@ -41,8 +49,15 @@ namespace MoveImageForm
         private void InitNotifyIcon()
         {
             _notifyIcon = new System.Windows.Forms.NotifyIcon();
-            // 默认使用系统的应用程序图标，这里也可以替换为你自己的ico文件
-            _notifyIcon.Icon = SystemIcons.Application;
+            try
+            {
+                string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
+                _notifyIcon.Icon = System.Drawing.Icon.ExtractAssociatedIcon(exePath) ?? SystemIcons.Application;
+            }
+            catch
+            {
+                _notifyIcon.Icon = SystemIcons.Application;
+            }
             _notifyIcon.Text = "poco运维工具 (后台运行中)";
             _notifyIcon.Visible = true;
 
@@ -247,21 +262,29 @@ namespace MoveImageForm
 
         private void Log(string message)
         {
+            AppendLog(lstLog, message);
+        }
+
+        private void LogProcess(string message)
+        {
+            AppendLog(lstProcessLog, message);
+        }
+
+        private void AppendLog(System.Windows.Controls.ListBox listBox, string message)
+        {
             string timeStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
             string logMessage = $"[{timeStamp}] {message}";
 
-            // 1. 在界面上显示（限制最多显示1000条，防止内存溢出）
             Dispatcher.InvokeAsync(() =>
             {
-                lstLog.Items.Add(logMessage);
-                if (lstLog.Items.Count > 1000)
+                listBox.Items.Add(logMessage);
+                if (listBox.Items.Count > 1000)
                 {
-                    lstLog.Items.RemoveAt(0);
+                    listBox.Items.RemoveAt(0);
                 }
-                lstLog.ScrollIntoView(lstLog.Items[lstLog.Items.Count - 1]);
+                listBox.ScrollIntoView(listBox.Items[listBox.Items.Count - 1]);
             });
 
-            // 2. 写入本地日志文件
             Task.Run(() =>
             {
                 try
@@ -273,15 +296,13 @@ namespace MoveImageForm
                         {
                             Directory.CreateDirectory(logDir);
                         }
-                        
-                        // 每天生成一个日志文件
+
                         string logFile = Path.Combine(logDir, $"Log_{DateTime.Now:yyyy-MM-dd}.txt");
                         File.AppendAllText(logFile, logMessage + Environment.NewLine);
                     }
                 }
                 catch
                 {
-                    // 如果写文件失败（如权限问题），不抛出异常以免影响主程序运行
                 }
             });
         }
@@ -527,39 +548,209 @@ namespace MoveImageForm
 
         #region Process Monitoring
 
+        private string GetProcessNameFromPath(string path)
+        {
+            string baseName = Path.GetFileNameWithoutExtension(path);
+            return string.IsNullOrWhiteSpace(baseName) ? "进程" : baseName;
+        }
+
+        private void SyncProcessNameFromPath(ProcessInfo proc)
+        {
+            if (string.IsNullOrWhiteSpace(proc.Path)) return;
+            proc.Name = GetProcessNameFromPath(proc.Path);
+        }
+
         private void InitProcessMonitoring()
         {
-            _processList = new ObservableCollection<ProcessViewModel>();
-            foreach (var proc in _config.WatchProcesses)
+            _isInitializingProcessMonitoring = true;
+            try
             {
-                _processList.Add(ProcessViewModel.FromProcessInfo(proc, SaveProcessList));
+                _processList = new ObservableCollection<ProcessViewModel>();
+                bool namesUpdated = false;
+                foreach (var proc in _config.WatchProcesses)
+                {
+                    string oldName = proc.Name;
+                    SyncProcessNameFromPath(proc);
+                    if (oldName != proc.Name)
+                        namesUpdated = true;
+                    _processList.Add(ProcessViewModel.FromProcessInfo(proc, SaveProcessList));
+                }
+                if (namesUpdated)
+                    SaveProcessList();
+                dgProcesses.ItemsSource = _processList;
+
+                int interval = _config.ProcessCheckIntervalSeconds;
+                if (interval < 1 || interval > 60) interval = 5;
+
+                int[] intervalValues = { 1, 2, 3, 5, 10, 15, 30, 60 };
+                int idx = Array.IndexOf(intervalValues, interval);
+                if (idx < 0) idx = 3;
+
+                _processTimer = new System.Windows.Threading.DispatcherTimer();
+                _processTimer.Interval = TimeSpan.FromSeconds(interval);
+                _processTimer.Tick += ProcessTimer_Tick;
+                cmbProcessInterval.SelectedIndex = idx;
+
+                InitProcessCountdownTimer();
+                _processTimer.Start();
+                _nextProcessCheckAt = DateTime.Now.AddSeconds(interval);
+                _nextRemindAllowedAt = _nextProcessCheckAt;
+
+                CheckAllProcesses();
+                LogProcess($"进程监控已启动，检查间隔 {interval} 秒，共 {_processList.Count} 个进程");
+                SyncProcessCheckCountdown();
             }
-            dgProcesses.ItemsSource = _processList;
+            finally
+            {
+                _isInitializingProcessMonitoring = false;
+            }
+        }
 
-            int interval = _config.ProcessCheckIntervalSeconds;
-            if (interval < 1 || interval > 60) interval = 5;
+        private void InitProcessCountdownTimer()
+        {
+            _countdownTimer = new System.Windows.Threading.DispatcherTimer();
+            _countdownTimer.Interval = TimeSpan.FromSeconds(1);
+            _countdownTimer.Tick += (s, e) => UpdateProcessCheckCountdown();
+            _countdownTimer.Start();
+        }
 
-            int[] intervalValues = { 1, 2, 3, 5, 10, 15, 30, 60 };
-            int idx = Array.IndexOf(intervalValues, interval);
-            cmbProcessInterval.SelectedIndex = idx >= 0 ? idx : 3;
+        private int GetProcessCheckIntervalSeconds()
+        {
+            if (_processTimer != null)
+                return Math.Max(1, (int)_processTimer.Interval.TotalSeconds);
 
-            _processTimer = new System.Windows.Threading.DispatcherTimer();
-            _processTimer.Interval = TimeSpan.FromSeconds(interval);
-            _processTimer.Tick += ProcessTimer_Tick;
-            _processTimer.Start();
+            int seconds = _config?.ProcessCheckIntervalSeconds ?? 5;
+            return seconds < 1 ? 5 : seconds;
+        }
 
-            CheckAllProcesses();
+        private void ResetProcessCheckCountdown()
+        {
+            int interval = GetProcessCheckIntervalSeconds();
+            _nextProcessCheckAt = DateTime.Now.AddSeconds(interval);
+            _nextRemindAllowedAt = _nextProcessCheckAt;
+
+            if (_processTimer != null)
+            {
+                _processTimer.Stop();
+                _processTimer.Start();
+            }
+
+            UpdateProcessCheckCountdown();
+        }
+
+        private void HideProcessCheckCountdown()
+        {
+            if (borderProcessCountdown != null)
+                borderProcessCountdown.Visibility = Visibility.Collapsed;
+
+            if (_processList != null)
+            {
+                foreach (var proc in _processList)
+                    proc.UpdateNextCheckCountdown(0, false);
+            }
+        }
+
+        private void SyncProcessCheckCountdown()
+        {
+            if (_processList != null && _processList.Any(ProcessNeedsRemind))
+                UpdateProcessCheckCountdown();
+            else
+                HideProcessCheckCountdown();
+        }
+
+        private bool ProcessNeedsRemind(ProcessViewModel proc)
+        {
+            return proc.Enabled
+                && proc.MonitorState != ProcessMonitorState.Running
+                && proc.MonitorState != ProcessMonitorState.Starting;
+        }
+
+        private void UpdateProcessCheckCountdown()
+        {
+            if (txtProcessCountdown == null || _processList == null)
+                return;
+
+            if (_isReminderDialogOpen || !_processList.Any(ProcessNeedsRemind))
+            {
+                HideProcessCheckCountdown();
+                return;
+            }
+
+            borderProcessCountdown.Visibility = Visibility.Visible;
+
+            int remaining = Math.Max(0, (int)Math.Ceiling((_nextProcessCheckAt - DateTime.Now).TotalSeconds));
+            int interval = GetProcessCheckIntervalSeconds();
+
+            txtProcessCountdown.Text = $"下次检测倒计时：{remaining} 秒";
+            txtProcessCountdownHint.Text = remaining > 0
+                ? $"检测间隔 {interval} 秒，倒计时结束后将弹窗提醒未运行进程"
+                : "即将开始检测...";
 
             foreach (var proc in _processList)
-            {
-                if (proc.Enabled && !proc.IsRunning)
-                    ShowProcessDownDialog(proc);
-            }
+                proc.UpdateNextCheckCountdown(remaining, ProcessNeedsRemind(proc));
         }
 
         private void ProcessTimer_Tick(object sender, EventArgs e)
         {
+            _nextRemindAllowedAt = DateTime.Now;
             CheckAllProcesses();
+            RemindDownProcesses();
+
+            int interval = GetProcessCheckIntervalSeconds();
+            _nextProcessCheckAt = DateTime.Now.AddSeconds(interval);
+            _nextRemindAllowedAt = _nextProcessCheckAt;
+            SyncProcessCheckCountdown();
+        }
+
+        private void RemindDownProcesses(bool immediate = false)
+        {
+            foreach (var proc in _processList)
+                RemindDownProcess(proc, immediate);
+        }
+
+        private void RemindDownProcess(ProcessViewModel proc, bool immediate = false)
+        {
+            if (!proc.Enabled
+                || proc.MonitorState == ProcessMonitorState.Running
+                || proc.MonitorState == ProcessMonitorState.Starting)
+                return;
+
+            if (IsProcessRunning(proc))
+            {
+                CheckSingleProcess(proc);
+                return;
+            }
+
+            if (!immediate && DateTime.Now < _nextRemindAllowedAt)
+                return;
+
+            LogProcess($"检测到 {proc.DisplayName} 未运行，弹出提醒");
+            ShowProcessDownDialog(proc);
+        }
+
+        private bool IsProcessRunning(ProcessViewModel proc)
+        {
+            try
+            {
+                string procName = Path.GetFileNameWithoutExtension(proc.Path);
+                if (string.IsNullOrWhiteSpace(procName))
+                    return false;
+
+                return Process.GetProcessesByName(procName).Length > 0;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void TryCloseReminderDialog(ProcessViewModel proc)
+        {
+            if (_activeReminderDialog == null || !ReferenceEquals(_activeReminderProcess, proc))
+                return;
+
+            LogProcess($"{proc.DisplayName} 已恢复运行，自动关闭提醒");
+            _activeReminderDialog.Close();
         }
 
         private void CheckAllProcesses()
@@ -572,7 +763,7 @@ namespace MoveImageForm
         {
             if (!proc.Enabled)
             {
-                proc.IsRunning = false;
+                proc.SetMonitorState(ProcessMonitorState.NotMonitoring);
                 UnwatchProcess(proc);
                 return;
             }
@@ -581,29 +772,49 @@ namespace MoveImageForm
             {
                 string procName = Path.GetFileNameWithoutExtension(proc.Path);
                 var processes = Process.GetProcessesByName(procName);
-                bool wasRunning = proc.IsRunning;
-                proc.IsRunning = processes.Length > 0;
+                bool isRunning = processes.Length > 0;
+                var previousState = proc.MonitorState;
 
-                if (proc.IsRunning && !_watchedProcesses.ContainsKey(proc))
+                if (isRunning)
                 {
-                    var p = processes[0];
-                    p.EnableRaisingEvents = true;
-                    p.Exited += (s, e) =>
+                    if (previousState == ProcessMonitorState.Starting)
+                        LogProcess($"{proc.DisplayName} 启动成功");
+                    else if (previousState != ProcessMonitorState.Running)
+                        LogProcess($"{proc.DisplayName} 已恢复运行");
+
+                    proc.SetMonitorState(ProcessMonitorState.Running);
+                    TryCloseReminderDialog(proc);
+
+                    if (!_watchedProcesses.ContainsKey(proc))
                     {
-                        Dispatcher.BeginInvoke(new Action(() => OnWatchedProcessExited(proc)));
-                    };
-                    _watchedProcesses[proc] = p;
+                        var p = processes[0];
+                        p.EnableRaisingEvents = true;
+                        p.Exited += (s, e) =>
+                        {
+                            Dispatcher.BeginInvoke(new Action(() => OnWatchedProcessExited(proc)));
+                        };
+                        _watchedProcesses[proc] = p;
+                    }
                 }
-
-                if (wasRunning && !proc.IsRunning)
+                else
                 {
-                    Log($"{proc.Name}（{procName}）已停止运行");
-                    ShowProcessDownDialog(proc);
+                    if (previousState == ProcessMonitorState.Running)
+                    {
+                        UnwatchProcess(proc);
+                        proc.SetMonitorState(ProcessMonitorState.Stopped);
+                    }
+                    else if (previousState != ProcessMonitorState.Starting
+                        && previousState != ProcessMonitorState.StartFailed
+                        && previousState != ProcessMonitorState.NotMonitoring)
+                    {
+                        proc.SetMonitorState(ProcessMonitorState.Stopped);
+                    }
                 }
             }
             catch
             {
-                proc.IsRunning = false;
+                if (proc.MonitorState != ProcessMonitorState.Starting)
+                    proc.SetMonitorState(ProcessMonitorState.Stopped);
             }
         }
 
@@ -619,56 +830,133 @@ namespace MoveImageForm
         private void OnWatchedProcessExited(ProcessViewModel proc)
         {
             UnwatchProcess(proc);
-            proc.IsRunning = false;
-            string procName = Path.GetFileNameWithoutExtension(proc.Path);
-            Log($"{proc.Name}（{procName}）已停止运行");
-            ShowProcessDownDialog(proc);
+
+            if (IsProcessRunning(proc))
+            {
+                CheckSingleProcess(proc);
+                return;
+            }
+
+            proc.SetMonitorState(ProcessMonitorState.Stopped);
+            LogProcess($"{proc.DisplayName} 已停止运行");
+            RemindDownProcess(proc, immediate: true);
         }
 
         private void ShowProcessDownDialog(ProcessViewModel proc)
         {
-            string procName = Path.GetFileNameWithoutExtension(proc.Path);
-            string msg = $"{proc.Name}（{procName}）未运行，是否立即启动？";
+            if (_isReminderDialogOpen) return;
 
-            var result = MessageBox.Show(msg, "进程监听",
-                MessageBoxButton.YesNo, MessageBoxImage.Warning);
-
-            if (result == MessageBoxResult.Yes)
+            if (IsProcessRunning(proc))
             {
-                try
+                CheckSingleProcess(proc);
+                return;
+            }
+
+            string msg = $"{proc.DisplayName} 未运行，请选择操作：";
+
+            HideProcessCheckCountdown();
+            _isReminderDialogOpen = true;
+            _activeReminderProcess = proc;
+            try
+            {
+                var dialog = new ProcessReminderDialog(msg);
+                _activeReminderDialog = dialog;
+                if (IsVisible)
+                    dialog.Owner = this;
+
+                if (dialog.ShowDialog() == true)
                 {
-                    if (!string.IsNullOrWhiteSpace(proc.Path) && File.Exists(proc.Path))
+                    switch (dialog.Choice)
                     {
-                        Process.Start(new ProcessStartInfo(proc.Path)
-                        {
-                            UseShellExecute = true,
-                            WorkingDirectory = Path.GetDirectoryName(proc.Path)
-                        });
-                        Log($"已启动进程: {proc.Name}（{procName}）");
-                    }
-                    else
-                    {
-                        MessageBox.Show($"找不到可执行文件:\n{proc.Path}", "启动失败",
-                            MessageBoxButton.OK, MessageBoxImage.Error);
-                        Log($"启动失败: 找不到文件 {proc.Path}");
+                        case ProcessReminderChoice.Start:
+                            StartWatchedProcess(proc);
+                            break;
+                        case ProcessReminderChoice.Snooze:
+                            LogProcess($"用户选择稍后提醒: {proc.DisplayName}，{GetSnoozeCountdownText()}");
+                            break;
+                        case ProcessReminderChoice.DisableMonitoring:
+                            ApplyProcessMonitoringState(proc, false,
+                                $"已关闭监听: {proc.DisplayName}，可在列表中重新打开");
+                            break;
                     }
                 }
-                catch (Exception ex)
+            }
+            finally
+            {
+                _isReminderDialogOpen = false;
+                _activeReminderDialog = null;
+                _activeReminderProcess = null;
+                SyncProcessCheckCountdown();
+            }
+        }
+
+        private void StartWatchedProcess(ProcessViewModel proc)
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(proc.Path) && File.Exists(proc.Path))
                 {
-                    MessageBox.Show($"启动失败: {ex.Message}", "启动失败",
+                    proc.SetMonitorState(ProcessMonitorState.Starting);
+                    Process.Start(new ProcessStartInfo(proc.Path)
+                    {
+                        UseShellExecute = true,
+                        WorkingDirectory = Path.GetDirectoryName(proc.Path)
+                    });
+                    LogProcess($"正在启动: {proc.DisplayName}");
+                    BeginWaitForProcessStart(proc);
+                }
+                else
+                {
+                    proc.SetMonitorState(ProcessMonitorState.StartFailed);
+                    MessageBox.Show($"找不到可执行文件:\n{proc.Path}", "启动失败",
                         MessageBoxButton.OK, MessageBoxImage.Error);
-                    Log($"启动进程 {proc.Name} 失败: {ex.Message}");
+                    LogProcess($"启动失败: 找不到文件 {proc.Path}");
                 }
             }
-            else
+            catch (Exception ex)
             {
-                Log($"用户选择忽略: {proc.Name}（{procName}）未运行");
+                proc.SetMonitorState(ProcessMonitorState.StartFailed);
+                MessageBox.Show($"启动失败: {ex.Message}", "启动失败",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+                LogProcess($"启动进程 {proc.DisplayName} 失败: {ex.Message}");
             }
+        }
+
+        private async void BeginWaitForProcessStart(ProcessViewModel proc)
+        {
+            string procName = Path.GetFileNameWithoutExtension(proc.Path);
+
+            for (int i = 0; i < 60; i++)
+            {
+                await Task.Delay(500);
+                if (proc.MonitorState != ProcessMonitorState.Starting)
+                    return;
+
+                if (Process.GetProcessesByName(procName).Length > 0)
+                {
+                    await Dispatcher.InvokeAsync(() => CheckSingleProcess(proc));
+                    return;
+                }
+            }
+
+            if (proc.MonitorState == ProcessMonitorState.Starting)
+            {
+                proc.SetMonitorState(ProcessMonitorState.StartFailed);
+                LogProcess($"{proc.DisplayName} 启动超时，未检测到进程运行");
+            }
+        }
+
+        private string GetSnoozeCountdownText()
+        {
+            int remaining = Math.Max(0, (int)Math.Ceiling((_nextProcessCheckAt - DateTime.Now).TotalSeconds));
+            return remaining > 0
+                ? $"将在 {remaining} 秒后再次弹窗检测"
+                : "即将再次弹窗检测";
         }
 
         private void CmbProcessInterval_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
         {
-            if (_config == null) return;
+            if (_config == null || _isInitializingProcessMonitoring) return;
 
             if (cmbProcessInterval.SelectedItem is System.Windows.Controls.ComboBoxItem item
                 && int.TryParse(item.Content.ToString(), out int seconds))
@@ -676,8 +964,10 @@ namespace MoveImageForm
                 _config.ProcessCheckIntervalSeconds = seconds;
                 if (_processTimer != null)
                     _processTimer.Interval = TimeSpan.FromSeconds(seconds);
+                if (_processList != null && _processList.Any(ProcessNeedsRemind))
+                    ResetProcessCheckCountdown();
                 SaveConfig();
-                Log($"监控间隔已更新为 {seconds} 秒");
+                LogProcess($"监控间隔已更新为 {seconds} 秒");
             }
         }
 
@@ -709,34 +999,70 @@ namespace MoveImageForm
             {
                 if (string.Equals(p.Path, path, StringComparison.OrdinalIgnoreCase))
                 {
-                    MessageBox.Show($"该路径已在监控列表中（{p.Name}）！");
+                    MessageBox.Show($"该路径已在监控列表中（{p.DisplayName}）！");
                     return;
                 }
             }
 
-            string name = $"进程{_processList.Count + 1}";
-
             var vm = new ProcessViewModel
             {
-                Name = name,
                 Path = path,
                 Enabled = true,
                 SaveCallback = SaveProcessList
             };
+            vm.Name = vm.DisplayName;
             _processList.Add(vm);
             SaveProcessList();
 
             txtProcessPath.Clear();
-            Log($"已添加进程监控: {name}（{Path.GetFileName(path)}）");
+            LogProcess($"已添加进程监控: {vm.DisplayName}");
 
             CheckSingleProcess(vm);
-            if (!vm.IsRunning)
-                ShowProcessDownDialog(vm);
+            if (ProcessNeedsRemind(vm))
+                ResetProcessCheckCountdown();
+            else
+                SyncProcessCheckCountdown();
         }
 
-        private void ProcessEnabled_Changed(object sender, RoutedEventArgs e)
+        private void ApplyProcessMonitoringState(ProcessViewModel proc, bool enabled, string customLog = null)
         {
-            SaveProcessList();
+            _suppressProcessEnabledHandler = true;
+            try
+            {
+                proc.Enabled = enabled;
+                if (enabled)
+                {
+                    LogProcess(customLog ?? $"已开启监听: {proc.DisplayName}");
+                    CheckSingleProcess(proc);
+                    if (ProcessNeedsRemind(proc))
+                        ResetProcessCheckCountdown();
+                    else
+                        SyncProcessCheckCountdown();
+                }
+                else
+                {
+                    UnwatchProcess(proc);
+                    LogProcess(customLog ?? $"已关闭监听: {proc.DisplayName}");
+                    SyncProcessCheckCountdown();
+                }
+                SaveProcessList();
+            }
+            finally
+            {
+                _suppressProcessEnabledHandler = false;
+            }
+        }
+
+        private void ProcessMonitorToggle_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (_suppressProcessEnabledHandler) return;
+
+            var checkBox = sender as System.Windows.Controls.CheckBox;
+            var vm = checkBox?.DataContext as ProcessViewModel;
+            if (vm == null) return;
+
+            e.Handled = true;
+            ApplyProcessMonitoringState(vm, !vm.Enabled);
         }
 
         private void BtnDeleteProcess_Click(object sender, RoutedEventArgs e)
@@ -748,7 +1074,7 @@ namespace MoveImageForm
                 UnwatchProcess(vm);
                 _processList.Remove(vm);
                 SaveProcessList();
-                Log($"已删除进程监控: {vm.Name}");
+                LogProcess($"已删除进程监控: {vm.DisplayName}");
             }
         }
 
