@@ -25,9 +25,6 @@ namespace MoveImageForm
         private System.Windows.Threading.DispatcherTimer _processTimer;
         private ObservableCollection<ProcessViewModel> _processList;
         private Dictionary<ProcessViewModel, Process> _watchedProcesses = new Dictionary<ProcessViewModel, Process>();
-        private bool _isReminderDialogOpen;
-        private ProcessReminderDialog _activeReminderDialog;
-        private ProcessViewModel _activeReminderProcess;
         private bool _suppressProcessEnabledHandler;
         private DateTime _nextProcessCheckAt;
         private DateTime _nextRemindAllowedAt;
@@ -670,7 +667,7 @@ namespace MoveImageForm
             if (txtProcessCountdown == null || _processList == null)
                 return;
 
-            if (_isReminderDialogOpen || !_processList.Any(ProcessNeedsRemind))
+            if (!_processList.Any(ProcessNeedsRemind))
             {
                 HideProcessCheckCountdown();
                 return;
@@ -683,7 +680,7 @@ namespace MoveImageForm
 
             txtProcessCountdown.Text = $"下次检测倒计时：{remaining} 秒";
             txtProcessCountdownHint.Text = remaining > 0
-                ? $"检测间隔 {interval} 秒，倒计时结束后将弹窗提醒未运行进程"
+                ? $"检测间隔 {interval} 秒，倒计时结束后将自动启动未运行进程"
                 : "即将开始检测...";
 
             foreach (var proc in _processList)
@@ -724,10 +721,26 @@ namespace MoveImageForm
             if (!immediate && DateTime.Now < _nextRemindAllowedAt)
                 return;
 
-            LogProcess($"检测到 {proc.DisplayName} 未运行，弹出提醒");
-            ShowProcessDownDialog(proc);
+            LogProcess($"检测到 {proc.DisplayName} 未运行，正在自动启动");
+            StartWatchedProcess(proc);
         }
 
+        private void UpdateProcessStartingLoading()
+        {
+            if (borderProcessStarting == null || txtProcessStarting == null || _processList == null)
+                return;
+
+            var starting = _processList.FirstOrDefault(p => p.MonitorState == ProcessMonitorState.Starting);
+            if (starting != null)
+            {
+                txtProcessStarting.Text = $"正在启动 {starting.DisplayName}，请稍候...";
+                borderProcessStarting.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                borderProcessStarting.Visibility = Visibility.Collapsed;
+            }
+        }
         private bool IsProcessRunning(ProcessViewModel proc)
         {
             try
@@ -742,15 +755,6 @@ namespace MoveImageForm
             {
                 return false;
             }
-        }
-
-        private void TryCloseReminderDialog(ProcessViewModel proc)
-        {
-            if (_activeReminderDialog == null || !ReferenceEquals(_activeReminderProcess, proc))
-                return;
-
-            LogProcess($"{proc.DisplayName} 已恢复运行，自动关闭提醒");
-            _activeReminderDialog.Close();
         }
 
         private void CheckAllProcesses()
@@ -783,7 +787,7 @@ namespace MoveImageForm
                         LogProcess($"{proc.DisplayName} 已恢复运行");
 
                     proc.SetMonitorState(ProcessMonitorState.Running);
-                    TryCloseReminderDialog(proc);
+                    UpdateProcessStartingLoading();
 
                     if (!_watchedProcesses.ContainsKey(proc))
                     {
@@ -842,54 +846,6 @@ namespace MoveImageForm
             RemindDownProcess(proc, immediate: true);
         }
 
-        private void ShowProcessDownDialog(ProcessViewModel proc)
-        {
-            if (_isReminderDialogOpen) return;
-
-            if (IsProcessRunning(proc))
-            {
-                CheckSingleProcess(proc);
-                return;
-            }
-
-            string msg = $"{proc.DisplayName} 未运行，请选择操作：";
-
-            HideProcessCheckCountdown();
-            _isReminderDialogOpen = true;
-            _activeReminderProcess = proc;
-            try
-            {
-                var dialog = new ProcessReminderDialog(msg);
-                _activeReminderDialog = dialog;
-                if (IsVisible)
-                    dialog.Owner = this;
-
-                if (dialog.ShowDialog() == true)
-                {
-                    switch (dialog.Choice)
-                    {
-                        case ProcessReminderChoice.Start:
-                            StartWatchedProcess(proc);
-                            break;
-                        case ProcessReminderChoice.Snooze:
-                            LogProcess($"用户选择稍后提醒: {proc.DisplayName}，{GetSnoozeCountdownText()}");
-                            break;
-                        case ProcessReminderChoice.DisableMonitoring:
-                            ApplyProcessMonitoringState(proc, false,
-                                $"已关闭监听: {proc.DisplayName}，可在列表中重新打开");
-                            break;
-                    }
-                }
-            }
-            finally
-            {
-                _isReminderDialogOpen = false;
-                _activeReminderDialog = null;
-                _activeReminderProcess = null;
-                SyncProcessCheckCountdown();
-            }
-        }
-
         private void StartWatchedProcess(ProcessViewModel proc)
         {
             try
@@ -897,6 +853,7 @@ namespace MoveImageForm
                 if (!string.IsNullOrWhiteSpace(proc.Path) && File.Exists(proc.Path))
                 {
                     proc.SetMonitorState(ProcessMonitorState.Starting);
+                    UpdateProcessStartingLoading();
                     Process.Start(new ProcessStartInfo(proc.Path)
                     {
                         UseShellExecute = true,
@@ -908,16 +865,14 @@ namespace MoveImageForm
                 else
                 {
                     proc.SetMonitorState(ProcessMonitorState.StartFailed);
-                    MessageBox.Show($"找不到可执行文件:\n{proc.Path}", "启动失败",
-                        MessageBoxButton.OK, MessageBoxImage.Error);
+                    UpdateProcessStartingLoading();
                     LogProcess($"启动失败: 找不到文件 {proc.Path}");
                 }
             }
             catch (Exception ex)
             {
                 proc.SetMonitorState(ProcessMonitorState.StartFailed);
-                MessageBox.Show($"启动失败: {ex.Message}", "启动失败",
-                    MessageBoxButton.OK, MessageBoxImage.Error);
+                UpdateProcessStartingLoading();
                 LogProcess($"启动进程 {proc.DisplayName} 失败: {ex.Message}");
             }
         }
@@ -943,15 +898,8 @@ namespace MoveImageForm
             {
                 proc.SetMonitorState(ProcessMonitorState.StartFailed);
                 LogProcess($"{proc.DisplayName} 启动超时，未检测到进程运行");
+                UpdateProcessStartingLoading();
             }
-        }
-
-        private string GetSnoozeCountdownText()
-        {
-            int remaining = Math.Max(0, (int)Math.Ceiling((_nextProcessCheckAt - DateTime.Now).TotalSeconds));
-            return remaining > 0
-                ? $"将在 {remaining} 秒后再次弹窗检测"
-                : "即将再次弹窗检测";
         }
 
         private void CmbProcessInterval_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)

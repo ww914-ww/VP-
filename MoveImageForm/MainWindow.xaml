@@ -141,15 +141,25 @@
                 </StackPanel>
 
                 <!-- 下次检测倒计时（有待检测进程时才显示） -->
-                <Border x:Name="borderProcessCountdown" Grid.Row="2" Visibility="Collapsed"
-                        Background="#FFF8E8" BorderBrush="#FFD080" BorderThickness="1"
-                        CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
-                    <StackPanel>
-                        <TextBlock x:Name="txtProcessCountdown" FontSize="14" FontWeight="Bold" Foreground="#CC6600"/>
-                        <TextBlock x:Name="txtProcessCountdownHint" Margin="0,2,0,0"
-                                   FontSize="11" Foreground="#888"/>
-                    </StackPanel>
-                </Border>
+                <StackPanel Grid.Row="2">
+                    <Border x:Name="borderProcessCountdown" Visibility="Collapsed"
+                            Background="#FFF8E8" BorderBrush="#FFD080" BorderThickness="1"
+                            CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
+                        <StackPanel>
+                            <TextBlock x:Name="txtProcessCountdown" FontSize="14" FontWeight="Bold" Foreground="#CC6600"/>
+                            <TextBlock x:Name="txtProcessCountdownHint" Margin="0,2,0,0"
+                                       FontSize="11" Foreground="#888"/>
+                        </StackPanel>
+                    </Border>
+                    <Border x:Name="borderProcessStarting" Visibility="Collapsed"
+                            Background="#E8F4FF" BorderBrush="#90C8F0" BorderThickness="1"
+                            CornerRadius="4" Padding="10,8" Margin="0,0,0,8">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                            <ProgressBar Width="140" Height="16" IsIndeterminate="True" Margin="0,0,10,0"/>
+                            <TextBlock x:Name="txtProcessStarting" FontSize="13" Foreground="#0066AA" VerticalAlignment="Center"/>
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
 
                 <!-- 进程列表 -->
                 <DataGrid x:Name="dgProcesses" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
@@ -189,7 +199,7 @@
 
                 <!-- 说明 -->
                 <TextBlock Grid.Row="5" Margin="0,8,0,0" FontSize="11" Foreground="#888">
-                    列表「监听」开关：打开=检测并弹窗提醒，关闭=不检测。点「稍后提醒」后，倒计时归零时将再次弹窗检测。
+                    列表「监听」开关：打开=检测并自动启动，关闭=不检测。进程未运行时将直接启动，启动过程中显示 loading。
                 </TextBlock>
             </Grid>
         </TabItem>
