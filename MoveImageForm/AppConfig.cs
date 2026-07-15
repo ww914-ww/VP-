@@ -3,7 +3,7 @@ using System.Xml.Serialization;
 
 namespace MoveImageForm
 {
-    [XmlRoot("Config")]
+    [XmlRoot("AppConfig")]
     public class AppConfig
     {
         // ===== 文件搬运（已有，不变） =====

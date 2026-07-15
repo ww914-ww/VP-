@@ -97,7 +97,7 @@
   完整模板:
 
 <?xml version="1.0" encoding="utf-8"?>
-<Config>
+<AppConfig>
     <!-- ==================== 文件搬运配置 ==================== -->
 
     <!-- 监控文件夹1: 要监控的源文件夹路径, 留空表示不使用 -->
@@ -151,7 +151,7 @@
 
     <!-- 监控进程列表, 在程序Tab2界面中添加, 会自动写入这里 -->
     <WatchProcesses />
-</Config>
+</AppConfig>
 
 3.1 各配置项说明
 ----------------------------------------------------------------------
@@ -185,7 +185,7 @@
   如果暂时只用来搬运文件，不连云端，用这个最小配置:
 
 <?xml version="1.0" encoding="utf-8"?>
-<Config>
+<AppConfig>
     <SourcePath>D:\Source</SourcePath>
     <DestPath>D:\Dest</DestPath>
     <SourcePath2></SourcePath2>
@@ -208,7 +208,7 @@
     <LastCheckTime></LastCheckTime>
     <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
     <WatchProcesses />
-</Config>
+</AppConfig>
 
 ================================================================================
 四、搭建云端版本服务器

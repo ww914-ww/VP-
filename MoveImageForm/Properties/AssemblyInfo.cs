@@ -7,11 +7,11 @@ using System.Windows;
 // 有关程序集的一般信息由以下
 // 控制。更改这些特性值可修改
 // 与程序集关联的信息。
-[assembly: AssemblyTitle("poco运维工具")]
+[assembly: AssemblyTitle("VP运维工具")]
 [assembly: AssemblyDescription("文件搬运 + 进程监听 + 版本更新")]
 [assembly: AssemblyConfiguration("")]
 [assembly: AssemblyCompany("")]
-[assembly: AssemblyProduct("poco运维工具")]
+[assembly: AssemblyProduct("VP运维工具")]
 [assembly: AssemblyCopyright("Copyright ©  2026")]
 [assembly: AssemblyTrademark("")]
 [assembly: AssemblyCulture("")]

@@ -8,6 +8,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Xml;
 using System.Xml.Serialization;
 using Microsoft.Win32;
 
@@ -55,7 +56,7 @@ namespace MoveImageForm
             {
                 _notifyIcon.Icon = SystemIcons.Application;
             }
-            _notifyIcon.Text = "poco运维工具 (后台运行中)";
+            _notifyIcon.Text = "VP运维工具 (后台运行中)";
             _notifyIcon.Visible = true;
 
             _notifyIcon.DoubleClick += (s, e) =>
@@ -1289,7 +1290,7 @@ namespace MoveImageForm
 
             return $@"@echo off
 chcp 65001 >nul
-echo 正在更新 poco运维工具 到版本 {version}...
+echo 正在更新 VP运维工具 到版本 {version}...
 
 timeout /t 2 /nobreak >nul
 
@@ -1368,7 +1369,7 @@ del ""%~f0"" & exit
         {
             try
             {
-                string appName = "poco运维工具";
+                string appName = "VP运维工具";
                 string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 string launcherPath = Path.Combine(
                     Path.GetDirectoryName(exePath), "..", "..", "Launcher.exe");
@@ -1420,35 +1421,262 @@ del ""%~f0"" & exit
         private void LoadConfig()
         {
             string path = GetConfigFilePath();
-            if (!File.Exists(path))
+            _config = new AppConfig();
+            bool needsSave = false;
+
+            if (File.Exists(path))
             {
-                _config = new AppConfig();
-                return;
+                if (TryDeserializeAppConfig(path, out AppConfig loaded))
+                {
+                    _config = loaded;
+                }
+                else if (TryParseConfigXml(path, out loaded))
+                {
+                    _config = loaded;
+                    needsSave = true;
+                    Log("已从旧版 Config 格式读取配置，将自动转换为 AppConfig 格式。");
+                }
+                else
+                {
+                    BackupCorruptConfig(path);
+                }
             }
 
+            foreach (string legacyPath in GetLegacyConfigCandidates(path))
+            {
+                if (!TryLoadConfigFromAnyFormat(legacyPath, out AppConfig legacy))
+                    continue;
+
+                if (MergeConfig(_config, legacy))
+                {
+                    needsSave = true;
+                    Log($"已从 {Path.GetFileName(legacyPath)} 迁移缺失的配置项。");
+                }
+            }
+
+            if (needsSave)
+                SaveConfig();
+        }
+
+        private string GetLocalConfigPath()
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "config.xml");
+        }
+
+        private IEnumerable<string> GetLegacyConfigCandidates(string primaryPath)
+        {
+            var candidates = new List<string>();
+            string localConfig = GetLocalConfigPath();
+            string fullPrimary = Path.GetFullPath(primaryPath);
+            if (!string.Equals(Path.GetFullPath(localConfig), fullPrimary, StringComparison.OrdinalIgnoreCase))
+                candidates.Add(localConfig);
+
+            candidates.Add(primaryPath + ".bak");
+
+            return candidates
+                .Where(File.Exists)
+                .Select(Path.GetFullPath)
+                .Distinct(StringComparer.OrdinalIgnoreCase);
+        }
+
+        private bool TryLoadConfigFromAnyFormat(string path, out AppConfig config)
+        {
+            return TryDeserializeAppConfig(path, out config) || TryParseConfigXml(path, out config);
+        }
+
+        private bool TryDeserializeAppConfig(string path, out AppConfig config)
+        {
+            config = null;
             try
             {
-                XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
-                using (StreamReader reader = new StreamReader(path))
+                var serializer = new XmlSerializer(typeof(AppConfig));
+                using (var reader = new StreamReader(path))
                 {
-                    _config = (AppConfig)serializer.Deserialize(reader);
+                    config = (AppConfig)serializer.Deserialize(reader);
                 }
+                return config != null;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private bool TryParseConfigXml(string path, out AppConfig config)
+        {
+            config = null;
+            try
+            {
+                var doc = new XmlDocument();
+                doc.Load(path);
+                var root = doc.DocumentElement;
+                if (root == null || (root.Name != "AppConfig" && root.Name != "Config"))
+                    return false;
+
+                config = new AppConfig
+                {
+                    SourcePath = GetXmlText(doc, "SourcePath"),
+                    DestPath = GetXmlText(doc, "DestPath"),
+                    SourcePath2 = GetXmlText(doc, "SourcePath2"),
+                    DestPath2 = GetXmlText(doc, "DestPath2"),
+                    TransferMode = GetXmlText(doc, "TransferMode", "Cut"),
+                    EnableTimeRule = GetXmlBool(doc, "EnableTimeRule", true),
+                    TimeIntervalSeconds = GetXmlInt(doc, "TimeIntervalSeconds", 60),
+                    EnableSizeRule = GetXmlBool(doc, "EnableSizeRule", false),
+                    SizeLimitMB = GetXmlLong(doc, "SizeLimitMB", 100),
+                    EnableCountRule = GetXmlBool(doc, "EnableCountRule", false),
+                    CountLimit = GetXmlInt(doc, "CountLimit", 1000),
+                    EnableEmptyFolderRule = GetXmlBool(doc, "EnableEmptyFolderRule", false),
+                    EmptyFolderHours = GetXmlDouble(doc, "EmptyFolderHours", 24.0),
+                    CloudPath = GetXmlText(doc, "CloudPath"),
+                    CloudUser = GetXmlText(doc, "CloudUser"),
+                    CloudPassword = GetXmlText(doc, "CloudPassword"),
+                    CheckIntervalMinutes = GetXmlInt(doc, "CheckIntervalMinutes", 30),
+                    AutoUpdate = GetXmlBool(doc, "AutoUpdate", false),
+                    AutoStart = GetXmlBool(doc, "AutoStart", false),
+                    LastCheckTime = GetXmlText(doc, "LastCheckTime"),
+                    ProcessCheckIntervalSeconds = GetXmlInt(doc, "ProcessCheckIntervalSeconds", 5),
+                    WatchProcesses = ParseWatchProcesses(doc)
+                };
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static List<ProcessInfo> ParseWatchProcesses(XmlDocument doc)
+        {
+            var processes = new List<ProcessInfo>();
+            var nodes = doc.SelectNodes("//WatchProcesses/Process");
+            if (nodes == null)
+                return processes;
+
+            foreach (XmlNode node in nodes)
+            {
+                processes.Add(new ProcessInfo
+                {
+                    Name = node.SelectSingleNode("Name")?.InnerText?.Trim() ?? "",
+                    Path = node.SelectSingleNode("Path")?.InnerText?.Trim() ?? "",
+                    Enabled = bool.TryParse(node.SelectSingleNode("Enabled")?.InnerText?.Trim(), out bool enabled) && enabled
+                });
+            }
+            return processes;
+        }
+
+        private static string GetXmlText(XmlDocument doc, string name, string defaultValue = "")
+        {
+            string value = doc.SelectSingleNode($"//{name}")?.InnerText?.Trim();
+            return string.IsNullOrEmpty(value) ? defaultValue : value;
+        }
+
+        private static bool GetXmlBool(XmlDocument doc, string name, bool defaultValue)
+        {
+            string value = doc.SelectSingleNode($"//{name}")?.InnerText?.Trim();
+            return string.IsNullOrEmpty(value) ? defaultValue : bool.TryParse(value, out bool result) && result;
+        }
+
+        private static int GetXmlInt(XmlDocument doc, string name, int defaultValue)
+        {
+            string value = doc.SelectSingleNode($"//{name}")?.InnerText?.Trim();
+            return int.TryParse(value, out int result) ? result : defaultValue;
+        }
+
+        private static long GetXmlLong(XmlDocument doc, string name, long defaultValue)
+        {
+            string value = doc.SelectSingleNode($"//{name}")?.InnerText?.Trim();
+            return long.TryParse(value, out long result) ? result : defaultValue;
+        }
+
+        private static double GetXmlDouble(XmlDocument doc, string name, double defaultValue)
+        {
+            string value = doc.SelectSingleNode($"//{name}")?.InnerText?.Trim();
+            return double.TryParse(value, out double result) ? result : defaultValue;
+        }
+
+        private bool MergeConfig(AppConfig target, AppConfig source)
+        {
+            bool changed = false;
+            if (MergeString(target.SourcePath, source.SourcePath, out string sourcePath))
+            {
+                target.SourcePath = sourcePath;
+                changed = true;
+            }
+            if (MergeString(target.DestPath, source.DestPath, out string destPath))
+            {
+                target.DestPath = destPath;
+                changed = true;
+            }
+            if (MergeString(target.SourcePath2, source.SourcePath2, out string sourcePath2))
+            {
+                target.SourcePath2 = sourcePath2;
+                changed = true;
+            }
+            if (MergeString(target.DestPath2, source.DestPath2, out string destPath2))
+            {
+                target.DestPath2 = destPath2;
+                changed = true;
+            }
+            if (MergeString(target.CloudPath, source.CloudPath, out string cloudPath))
+            {
+                target.CloudPath = cloudPath;
+                changed = true;
+            }
+            if (MergeString(target.CloudUser, source.CloudUser, out string cloudUser))
+            {
+                target.CloudUser = cloudUser;
+                changed = true;
+            }
+            if (MergeString(target.CloudPassword, source.CloudPassword, out string cloudPassword))
+            {
+                target.CloudPassword = cloudPassword;
+                changed = true;
+            }
+            if (MergeString(target.LastCheckTime, source.LastCheckTime, out string lastCheckTime))
+            {
+                target.LastCheckTime = lastCheckTime;
+                changed = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(target.TransferMode) && !string.IsNullOrWhiteSpace(source.TransferMode))
+            {
+                target.TransferMode = source.TransferMode;
+                changed = true;
+            }
+
+            if (target.WatchProcesses.Count == 0 && source.WatchProcesses != null && source.WatchProcesses.Count > 0)
+            {
+                target.WatchProcesses = source.WatchProcesses;
+                changed = true;
+            }
+
+            return changed;
+        }
+
+        private static bool MergeString(string target, string source, out string result)
+        {
+            result = target;
+            if (!string.IsNullOrWhiteSpace(target) || string.IsNullOrWhiteSpace(source))
+                return false;
+
+            result = source;
+            return true;
+        }
+
+        private void BackupCorruptConfig(string path)
+        {
+            string backupPath = path + ".bak";
+            try
+            {
+                if (File.Exists(backupPath))
+                    File.Delete(backupPath);
+                File.Move(path, backupPath);
+                Log($"配置文件已损坏，已备份为 {Path.GetFileName(backupPath)}，将尝试从其他位置迁移配置。");
             }
             catch (Exception ex)
             {
-                string backupPath = path + ".bak";
-                try
-                {
-                    if (File.Exists(backupPath))
-                        File.Delete(backupPath);
-                    File.Move(path, backupPath);
-                    Log($"配置文件已损坏，已备份为 {System.IO.Path.GetFileName(backupPath)}，将使用默认配置。错误: {ex.Message}");
-                }
-                catch
-                {
-                    Log($"配置文件读取失败，将使用默认配置。错误: {ex.Message}");
-                }
-                _config = new AppConfig();
+                Log($"配置文件读取失败: {ex.Message}");
             }
         }
 

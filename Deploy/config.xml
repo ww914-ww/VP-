@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<Config>
+<AppConfig>
     <SourcePath></SourcePath>
     <DestPath></DestPath>
     <SourcePath2></SourcePath2>
@@ -22,4 +22,4 @@
     <LastCheckTime></LastCheckTime>
     <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
     <WatchProcesses />
-</Config>
+</AppConfig>
