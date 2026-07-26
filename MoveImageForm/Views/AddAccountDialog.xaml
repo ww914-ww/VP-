@@ -1,0 +1,51 @@
+<Window x:Class="MoveImageForm.Views.AddAccountDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="添加账号" Height="400" Width="360"
+        WindowStartupLocation="CenterOwner" ResizeMode="NoResize"
+        WindowStyle="ToolWindow" ShowInTaskbar="False">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Text="名称（显示名称）:" Margin="0,0,0,5"/>
+        <TextBox x:Name="txtName" Grid.Row="1" Height="28" Margin="0,0,0,10"/>
+
+        <TextBlock Grid.Row="2" Text="账号（SSH用户名）:" Margin="0,0,0,5"/>
+        <TextBox x:Name="txtUsername" Grid.Row="3" Height="28" Margin="0,0,0,10"/>
+
+        <TextBlock Grid.Row="4" Text="密码:" Margin="0,0,0,5"/>
+        <PasswordBox x:Name="txtPassword" Grid.Row="5" Height="28" Margin="0,0,0,10"/>
+
+        <TextBlock Grid.Row="6" Text="权限:" Margin="0,0,0,5"/>
+        <StackPanel Grid.Row="7" Orientation="Horizontal" Margin="0,0,0,10">
+            <RadioButton x:Name="rbUpload" Content="upload（仅追加）" Margin="0,0,15,0" IsChecked="True"/>
+            <RadioButton x:Name="rbAdmin" Content="admin（全部）" Margin="0,0,15,0"/>
+            <RadioButton x:Name="rbReadonly" Content="readonly（只读）"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="8" Text="远程路径:" Margin="0,0,0,5"/>
+        <TextBox x:Name="txtRemoteRoot" Grid.Row="9" Height="28" Text="/" Margin="0,0,0,10"/>
+
+        <TextBlock x:Name="txtError" Grid.Row="10" Foreground="Red" FontSize="12"
+                   Margin="0,0,0,0" Visibility="Collapsed"/>
+
+        <StackPanel Grid.Row="10" Orientation="Horizontal" HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom">
+            <Button Content="添加" Width="70" Height="28" Margin="0,0,10,0"
+                    Click="BtnAdd_Click" IsDefault="True"/>
+            <Button Content="取消" Width="70" Height="28"
+                    Click="BtnCancel_Click" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

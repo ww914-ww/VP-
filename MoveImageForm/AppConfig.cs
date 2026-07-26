@@ -1,20 +1,26 @@
 using System.Collections.Generic;
 using System.Xml.Serialization;
+using MoveImageForm.Models;
 
 namespace MoveImageForm
 {
-    [XmlRoot("AppConfig")]
+    [XmlRoot("Config")]
     public class AppConfig
     {
-        // ===== 文件搬运（已有，不变） =====
+        // ===== 文件搬运 — 源目录 =====
         [XmlElement]
         public string SourcePath { get; set; } = "";
         [XmlElement]
-        public string DestPath { get; set; } = "";
-        [XmlElement]
         public string SourcePath2 { get; set; } = "";
+
+        /// <summary>SourcePath 绑定的 SFTP 账号（Profile.Name）</summary>
         [XmlElement]
-        public string DestPath2 { get; set; } = "";
+        public string SourcePath1Profile { get; set; } = "";
+
+        /// <summary>SourcePath2 绑定的 SFTP 账号（Profile.Name）</summary>
+        [XmlElement]
+        public string SourcePath2Profile { get; set; } = "";
+
         [XmlElement]
         public string TransferMode { get; set; } = "Cut";
 
@@ -38,13 +44,39 @@ namespace MoveImageForm
         [XmlElement]
         public double EmptyFolderHours { get; set; } = 24.0;
 
-        // ===== 版本更新（新增） =====
-        [XmlElement]
-        public string CloudPath { get; set; } = "";
-        [XmlElement]
-        public string CloudUser { get; set; } = "";
-        [XmlElement]
-        public string CloudPassword { get; set; } = "";
+        // ===== SFTP 账号配置 =====
+        [XmlArray("SftpProfiles")]
+        [XmlArrayItem("Profile")]
+        public List<SftpProfile> SftpProfiles { get; set; } = new List<SftpProfile>();
+
+        /// <summary>根据名称查找 Profile</summary>
+        public SftpProfile FindProfile(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            return SftpProfiles.Find(p => p.Name == name);
+        }
+
+        /// <summary>获取 SourcePath 对应的 Profile。未配置返回 null。</summary>
+        public SftpProfile GetProfileForSource(string sourceKey)
+        {
+            string profileName = sourceKey == "SourcePath2"
+                ? SourcePath2Profile
+                : SourcePath1Profile;
+            return FindProfile(profileName);
+        }
+
+        /// <summary>返回所有在 SourcePath 中引用到的 Profile 名称</summary>
+        public List<string> GetActiveProfileNames()
+        {
+            var names = new List<string>();
+            if (!string.IsNullOrWhiteSpace(SourcePath) && !string.IsNullOrWhiteSpace(SourcePath1Profile))
+                names.Add(SourcePath1Profile);
+            if (!string.IsNullOrWhiteSpace(SourcePath2) && !string.IsNullOrWhiteSpace(SourcePath2Profile))
+                names.Add(SourcePath2Profile);
+            return names;
+        }
+
+        // ===== 版本更新 =====
         [XmlElement]
         public int CheckIntervalMinutes { get; set; } = 30;
         [XmlElement]
@@ -54,7 +86,7 @@ namespace MoveImageForm
         [XmlElement]
         public string LastCheckTime { get; set; } = "";
 
-        // ===== 进程监听（新增） =====
+        // ===== 进程监听 =====
         [XmlElement]
         public int ProcessCheckIntervalSeconds { get; set; } = 5;
 

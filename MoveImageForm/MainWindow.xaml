@@ -1,255 +1,344 @@
 <Window x:Class="MoveImageForm.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="VP运维工具" Height="680" Width="620"
+        Title="VP运维工具" Height="680" Width="680"
         Icon="pack://application:,,,/Resources/AppLogo.ico"
         Loaded="Window_Loaded" Closing="Window_Closing">
-    <TabControl Margin="5">
-        <!-- ===== Tab 1: 文件搬运 ===== -->
-        <TabItem Header="文件搬运">
-            <ScrollViewer VerticalScrollBarVisibility="Auto">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
+
+        <!-- 顶部登录栏 -->
+        <Border Grid.Row="0" Background="#F0F0F0" Padding="8,6" BorderBrush="#DDD" BorderThickness="0,0,0,1">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+                <Button x:Name="btnLogin" Content="登录" Width="Auto" MinWidth="90" Height="28"
+                        Padding="10,2" Click="BtnLogin_Click" Grid.Column="0"/>
+                <StackPanel x:Name="spLoginStatus" Grid.Column="1" Orientation="Horizontal"
+                            VerticalAlignment="Center" Margin="10,0,0,0" Visibility="Collapsed">
+                    <TextBlock x:Name="txtLoginInfo" FontSize="12" Foreground="#333" VerticalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <!-- Tab 区域 -->
+        <TabControl x:Name="tabMain" Margin="5" Grid.Row="1" SelectionChanged="TabMain_SelectionChanged">
+            <!-- ===== Tab 1: 文件搬运 ===== -->
+            <TabItem Header="文件搬运">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <Grid Margin="5">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="Auto"/>
+                            <RowDefinition Height="*"/>
+                        </Grid.RowDefinitions>
+
+                        <!-- 登录状态条 -->
+                        <Border x:Name="borderTransferStatus" Grid.Row="0" Background="#E8F4E8"
+                                BorderBrush="#90D090" BorderThickness="1" CornerRadius="4"
+                                Padding="10,6" Margin="0,0,0,10" Visibility="Collapsed">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock x:Name="txtTransferStatus" FontSize="12" Foreground="#006600"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- 未登录提示 -->
+                        <Border x:Name="borderNotLoggedIn" Grid.Row="0" Background="#FFF8E8"
+                                BorderBrush="#FFD080" BorderThickness="1" CornerRadius="4"
+                                Padding="10,6" Margin="0,0,0,10">
+                            <TextBlock FontSize="12" Foreground="#CC6600"
+                                       Text="请先点击左上角「登录」连接服务器，再进行文件搬运操作。"/>
+                        </Border>
+
+                        <!-- 源文件夹 -->
+                        <GroupBox Header="源文件夹" Grid.Row="1" Margin="0,0,0,10">
+                            <Grid Margin="5">
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="Auto"/>
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="80"/>
+                                    <ColumnDefinition Width="*"/>
+                                    <ColumnDefinition Width="60"/>
+                                    <ColumnDefinition Width="40"/>
+                                    <ColumnDefinition Width="120"/>
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Text="监控文件夹1:" VerticalAlignment="Center" Grid.Row="0" Grid.Column="0"/>
+                                <TextBox x:Name="txtSourcePath" Grid.Row="0" Grid.Column="1" Margin="5"/>
+                                <Button Content="浏览..." Grid.Row="0" Grid.Column="2" Margin="5" Click="BtnBrowseSource_Click"/>
+                                <TextBlock Text="账号:" VerticalAlignment="Center" Grid.Row="0" Grid.Column="3" Margin="5,0"/>
+                                <ComboBox x:Name="cmbSource1Profile" Grid.Row="0" Grid.Column="4" Height="24"
+                                          DisplayMemberPath="Name" Margin="5"/>
+
+                                <TextBlock Text="监控文件夹2:" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" Margin="0,5,0,0"/>
+                                <TextBox x:Name="txtSourcePath2" Grid.Row="1" Grid.Column="1" Margin="5"/>
+                                <Button Content="浏览..." Grid.Row="1" Grid.Column="2" Margin="5" Click="BtnBrowseSource2_Click"/>
+                                <TextBlock Text="账号:" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" Margin="5,0"/>
+                                <ComboBox x:Name="cmbSource2Profile" Grid.Row="1" Grid.Column="4" Height="24"
+                                          DisplayMemberPath="Name" Margin="5"/>
+                            </Grid>
+                        </GroupBox>
+
+                        <!-- 搬运规则 -->
+                        <GroupBox Header="搬运规则" Grid.Row="2" Margin="0,0,0,10">
+                            <StackPanel Margin="5">
+                                <TextBlock Text="传输模式:" FontWeight="Bold" Margin="0,0,0,5"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,5">
+                                    <RadioButton x:Name="rbAppendMode" Content="仅追加（不覆盖已存在的文件）" GroupName="TransferMode" VerticalAlignment="Center"/>
+                                    <RadioButton x:Name="rbCopyMode" Content="复制（智能跳过未变文件）" GroupName="TransferMode" Margin="20,0,0,0" VerticalAlignment="Center"/>
+                                    <RadioButton x:Name="rbCutMode" Content="剪切（移动文件）" GroupName="TransferMode" Margin="20,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <Separator Margin="0,5"/>
+                                <TextBlock Text="触发条件 (满足任一勾选条件即触发搬运):" FontWeight="Bold" Margin="0,0,0,5"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,5">
+                                    <CheckBox x:Name="chkTimeRule" Content="按时间搬运: 每隔 " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtTimeInterval" Width="50" Margin="5,0"/>
+                                    <TextBlock Text=" 秒" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,5">
+                                    <CheckBox x:Name="chkSizeRule" Content="按空间搬运: 达到 " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtSizeLimit" Width="50" Margin="5,0"/>
+                                    <TextBlock Text=" MB" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel Orientation="Horizontal" Margin="0,5">
+                                    <CheckBox x:Name="chkCountRule" Content="按文件数量搬运: 达到 " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtCountLimit" Width="50" Margin="5,0"/>
+                                    <TextBlock Text=" 个文件" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <Separator Margin="0,5"/>
+                                <TextBlock Text="清理条件 (每次搬运完成后执行):" FontWeight="Bold" Margin="0,5,0,5"/>
+                                <StackPanel Orientation="Horizontal" Margin="0,5">
+                                    <CheckBox x:Name="chkEmptyFolderRule" Content="清理空文件夹: 文件夹创建超过 " VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtEmptyFolderHours" Width="50" Margin="5,0"/>
+                                    <TextBlock Text=" 小时且为空时删除" VerticalAlignment="Center"/>
+                                </StackPanel>
+                            </StackPanel>
+                        </GroupBox>
+
+                        <!-- 操作按钮 -->
+                        <StackPanel Orientation="Horizontal" Grid.Row="3" HorizontalAlignment="Center" Margin="0,0,0,10">
+                            <Button x:Name="btnStart" Content="开始搬运" Width="100" Height="30" Margin="10,0" Click="BtnStart_Click"/>
+                            <Button x:Name="btnStop" Content="停止搬运" Width="100" Height="30" Margin="10,0" IsEnabled="False" Click="BtnStop_Click"/>
+                        </StackPanel>
+
+                        <!-- 运行日志 -->
+                        <GroupBox Header="运行日志" Grid.Row="4">
+                            <ListBox x:Name="lstLog" Margin="5"/>
+                        </GroupBox>
+                    </Grid>
+                </ScrollViewer>
+            </TabItem>
+
+            <!-- ===== Tab 2: 进程监听 ===== -->
+            <TabItem Header="进程监听">
                 <Grid Margin="5">
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="140"/>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
-                    <!-- 路径配置 -->
-                    <GroupBox Header="路径配置" Grid.Row="0" Margin="0,0,0,10">
-                        <Grid Margin="5">
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                                <RowDefinition Height="Auto"/>
-                            </Grid.RowDefinitions>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="80"/>
-                                <ColumnDefinition Width="*"/>
-                                <ColumnDefinition Width="60"/>
-                            </Grid.ColumnDefinitions>
-
-                            <TextBlock Text="监控文件夹1:" VerticalAlignment="Center" Grid.Row="0" Grid.Column="0"/>
-                            <TextBox x:Name="txtSourcePath" Grid.Row="0" Grid.Column="1" Margin="5"/>
-                            <Button Content="浏览..." Grid.Row="0" Grid.Column="2" Margin="5" Click="BtnBrowseSource_Click"/>
-
-                            <TextBlock Text="目标文件夹1:" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0"/>
-                            <TextBox x:Name="txtDestPath" Grid.Row="1" Grid.Column="1" Margin="5"/>
-                            <Button Content="浏览..." Grid.Row="1" Grid.Column="2" Margin="5" Click="BtnBrowseDest_Click"/>
-
-                            <TextBlock Text="监控文件夹2:" VerticalAlignment="Center" Grid.Row="2" Grid.Column="0" Margin="0,5,0,0"/>
-                            <TextBox x:Name="txtSourcePath2" Grid.Row="2" Grid.Column="1" Margin="5"/>
-                            <Button Content="浏览..." Grid.Row="2" Grid.Column="2" Margin="5" Click="BtnBrowseSource2_Click"/>
-
-                            <TextBlock Text="目标文件夹2:" VerticalAlignment="Center" Grid.Row="3" Grid.Column="0"/>
-                            <TextBox x:Name="txtDestPath2" Grid.Row="3" Grid.Column="1" Margin="5"/>
-                            <Button Content="浏览..." Grid.Row="3" Grid.Column="2" Margin="5" Click="BtnBrowseDest2_Click"/>
-                        </Grid>
-                    </GroupBox>
-
-                    <!-- 搬运与清理规则 -->
-                    <GroupBox Header="搬运与清理规则" Grid.Row="1" Margin="0,0,0,10">
-                        <StackPanel Margin="5">
-                            <TextBlock Text="处理方式:" FontWeight="Bold" Margin="0,0,0,5"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,5">
-                                <RadioButton x:Name="rbCutMode" Content="剪切（移动到目标文件夹）" GroupName="TransferMode" VerticalAlignment="Center"/>
-                                <RadioButton x:Name="rbCopyMode" Content="复制（已复制且未变化的文件会跳过）" GroupName="TransferMode" Margin="20,0,0,0" VerticalAlignment="Center"/>
-                            </StackPanel>
-
-                            <Separator Margin="0,5"/>
-                            <TextBlock Text="触发条件 (满足任一勾选条件即触发搬运):" FontWeight="Bold" Margin="0,0,0,5"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,5">
-                                <CheckBox x:Name="chkTimeRule" Content="按时间搬运: 每隔 " VerticalAlignment="Center"/>
-                                <TextBox x:Name="txtTimeInterval" Width="50" Margin="5,0"/>
-                                <TextBlock Text=" 秒" VerticalAlignment="Center"/>
-                            </StackPanel>
-
-                            <StackPanel Orientation="Horizontal" Margin="0,5">
-                                <CheckBox x:Name="chkSizeRule" Content="按空间搬运: 达到 " VerticalAlignment="Center"/>
-                                <TextBox x:Name="txtSizeLimit" Width="50" Margin="5,0"/>
-                                <TextBlock Text=" MB" VerticalAlignment="Center"/>
-                            </StackPanel>
-
-                            <StackPanel Orientation="Horizontal" Margin="0,5">
-                                <CheckBox x:Name="chkCountRule" Content="按文件数量搬运: 达到 " VerticalAlignment="Center"/>
-                                <TextBox x:Name="txtCountLimit" Width="50" Margin="5,0"/>
-                                <TextBlock Text=" 个文件" VerticalAlignment="Center"/>
-                            </StackPanel>
-
-                            <Separator Margin="0,5"/>
-                            <TextBlock Text="清理条件 (每次搬运完成后执行):" FontWeight="Bold" Margin="0,5,0,5"/>
-                            <StackPanel Orientation="Horizontal" Margin="0,5">
-                                <CheckBox x:Name="chkEmptyFolderRule" Content="清理空文件夹: 文件夹创建超过 " VerticalAlignment="Center"/>
-                                <TextBox x:Name="txtEmptyFolderHours" Width="50" Margin="5,0"/>
-                                <TextBlock Text=" 小时且为空时删除" VerticalAlignment="Center"/>
-                            </StackPanel>
-                        </StackPanel>
-                    </GroupBox>
-
-                    <!-- 操作按钮 -->
-                    <StackPanel Orientation="Horizontal" Grid.Row="2" HorizontalAlignment="Center" Margin="0,0,0,10">
-                        <Button x:Name="btnStart" Content="开始搬运" Width="100" Height="30" Margin="10,0" Click="BtnStart_Click"/>
-                        <Button x:Name="btnStop" Content="停止搬运" Width="100" Height="30" Margin="10,0" IsEnabled="False" Click="BtnStop_Click"/>
+                    <!-- 添加栏 -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="启动路径:" VerticalAlignment="Center"/>
+                        <TextBox x:Name="txtProcessPath" Width="280" Margin="5,0"/>
+                        <Button Content="浏览..." Width="50" Margin="5,0,0,0" Click="BtnBrowseProcessPath_Click"/>
+                        <Button x:Name="btnAddProcess" Content="添加" Width="50" Margin="10,0,0,0" Click="BtnAddProcess_Click"/>
                     </StackPanel>
 
-                    <!-- 运行日志 -->
-                    <GroupBox Header="运行日志" Grid.Row="3">
-                        <ListBox x:Name="lstLog" Margin="5"/>
+                    <!-- 监控间隔 -->
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
+                        <TextBlock Text="监控间隔:" VerticalAlignment="Center"/>
+                        <ComboBox x:Name="cmbProcessInterval" Width="60" Margin="5,0"
+                                  SelectionChanged="CmbProcessInterval_Changed">
+                            <ComboBoxItem Content="1"/>
+                            <ComboBoxItem Content="2"/>
+                            <ComboBoxItem Content="3"/>
+                            <ComboBoxItem Content="5"/>
+                            <ComboBoxItem Content="10"/>
+                            <ComboBoxItem Content="15"/>
+                            <ComboBoxItem Content="30"/>
+                            <ComboBoxItem Content="60"/>
+                        </ComboBox>
+                        <TextBlock Text="秒" VerticalAlignment="Center"/>
+                    </StackPanel>
+
+                    <!-- 下次检测倒计时 -->
+                    <StackPanel Grid.Row="2">
+                        <Border x:Name="borderProcessCountdown" Visibility="Collapsed"
+                                Background="#FFF8E8" BorderBrush="#FFD080" BorderThickness="1"
+                                CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
+                            <StackPanel>
+                                <TextBlock x:Name="txtProcessCountdown" FontSize="14" FontWeight="Bold" Foreground="#CC6600"/>
+                                <TextBlock x:Name="txtProcessCountdownHint" Margin="0,2,0,0"
+                                           FontSize="11" Foreground="#888"/>
+                            </StackPanel>
+                        </Border>
+                        <Border x:Name="borderProcessStarting" Visibility="Collapsed"
+                                Background="#E8F4FF" BorderBrush="#90C8F0" BorderThickness="1"
+                                CornerRadius="4" Padding="10,8" Margin="0,0,0,8">
+                            <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
+                                <ProgressBar Width="140" Height="16" IsIndeterminate="True" Margin="0,0,10,0"/>
+                                <TextBlock x:Name="txtProcessStarting" FontSize="13" Foreground="#0066AA" VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+
+                    <!-- 进程列表 -->
+                    <DataGrid x:Name="dgProcesses" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="进程名" Binding="{Binding DisplayName}" Width="100" IsReadOnly="True"/>
+                            <DataGridTextColumn Header="启动路径" Binding="{Binding Path}" Width="240"/>
+                            <DataGridTemplateColumn Header="运行状态" Width="115">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusColor}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="监听" Width="56">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Content="开" IsChecked="{Binding Enabled, Mode=OneWay}"
+                                                  HorizontalAlignment="Center"
+                                                  PreviewMouseLeftButtonDown="ProcessMonitorToggle_PreviewMouseLeftButtonDown"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTemplateColumn Header="操作" Width="50">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="删除" Click="BtnDeleteProcess_Click" Tag="{Binding}" Width="40" Height="22"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <!-- 监控日志 -->
+                    <GroupBox Header="监控日志" Grid.Row="4" Margin="0,8,0,0">
+                        <ListBox x:Name="lstProcessLog" Margin="5"/>
                     </GroupBox>
+
+                    <!-- 说明 -->
+                    <TextBlock Grid.Row="5" Margin="0,8,0,0" FontSize="11" Foreground="#888">
+                        列表「监听」开关：打开=检测并自动启动，关闭=不检测。进程未运行时将直接启动，启动过程中显示 loading。
+                    </TextBlock>
                 </Grid>
-            </ScrollViewer>
-        </TabItem>
+            </TabItem>
 
-        <!-- ===== Tab 2: 进程监听 ===== -->
-        <TabItem Header="进程监听">
-            <Grid Margin="5">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="140"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+            <!-- ===== Tab 3: 版本更新 ===== -->
+            <TabItem Header="版本更新">
+                <Grid Margin="5">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <!-- 添加栏 -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,10">
-                    <TextBlock Text="启动路径:" VerticalAlignment="Center"/>
-                    <TextBox x:Name="txtProcessPath" Width="280" Margin="5,0"/>
-                    <Button Content="浏览..." Width="50" Margin="5,0,0,0" Click="BtnBrowseProcessPath_Click"/>
-                    <Button x:Name="btnAddProcess" Content="添加" Width="50" Margin="10,0,0,0" Click="BtnAddProcess_Click"/>
-                </StackPanel>
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
+                        <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180">
+                            <StackPanel>
+                                <TextBlock x:Name="txtLocalVersion" FontSize="28" FontWeight="Bold" Foreground="#0078d4" HorizontalAlignment="Center">-</TextBlock>
+                                <TextBlock Text="当前本地版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </Border>
+                        <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180" Margin="12,0,0,0">
+                            <StackPanel>
+                                <TextBlock x:Name="txtCloudVersion" FontSize="28" FontWeight="Bold" Foreground="#107c10" HorizontalAlignment="Center">-</TextBlock>
+                                <TextBlock Text="云端最新版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
 
-                <!-- 监控间隔 -->
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Margin="0,0,0,10">
-                    <TextBlock Text="监控间隔:" VerticalAlignment="Center"/>
-                    <ComboBox x:Name="cmbProcessInterval" Width="60" Margin="5,0"
-                              SelectionChanged="CmbProcessInterval_Changed">
-                        <ComboBoxItem Content="1"/>
-                        <ComboBoxItem Content="2"/>
-                        <ComboBoxItem Content="3"/>
-                        <ComboBoxItem Content="5"/>
-                        <ComboBoxItem Content="10"/>
-                        <ComboBoxItem Content="15"/>
-                        <ComboBoxItem Content="30"/>
-                        <ComboBoxItem Content="60"/>
-                    </ComboBox>
-                    <TextBlock Text="秒" VerticalAlignment="Center"/>
-                </StackPanel>
-
-                <!-- 下次检测倒计时（有待检测进程时才显示） -->
-                <StackPanel Grid.Row="2">
-                    <Border x:Name="borderProcessCountdown" Visibility="Collapsed"
-                            Background="#FFF8E8" BorderBrush="#FFD080" BorderThickness="1"
-                            CornerRadius="4" Padding="10,6" Margin="0,0,0,8">
-                        <StackPanel>
-                            <TextBlock x:Name="txtProcessCountdown" FontSize="14" FontWeight="Bold" Foreground="#CC6600"/>
-                            <TextBlock x:Name="txtProcessCountdownHint" Margin="0,2,0,0"
-                                       FontSize="11" Foreground="#888"/>
-                        </StackPanel>
+                    <Border x:Name="borderNewVersion" Grid.Row="1" Background="#E8F4E8" Padding="10" CornerRadius="4" Margin="0,0,0,12" Visibility="Collapsed">
+                        <TextBlock x:Name="txtNewVersionInfo" FontSize="13"/>
                     </Border>
-                    <Border x:Name="borderProcessStarting" Visibility="Collapsed"
-                            Background="#E8F4FF" BorderBrush="#90C8F0" BorderThickness="1"
-                            CornerRadius="4" Padding="10,8" Margin="0,0,0,8">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center">
-                            <ProgressBar Width="140" Height="16" IsIndeterminate="True" Margin="0,0,10,0"/>
-                            <TextBlock x:Name="txtProcessStarting" FontSize="13" Foreground="#0066AA" VerticalAlignment="Center"/>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
 
-                <!-- 进程列表 -->
-                <DataGrid x:Name="dgProcesses" Grid.Row="3" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False">
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="进程名" Binding="{Binding DisplayName}" Width="100" IsReadOnly="True"/>
-                        <DataGridTextColumn Header="启动路径" Binding="{Binding Path}" Width="240"/>
-                        <DataGridTemplateColumn Header="运行状态" Width="115">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <TextBlock Text="{Binding StatusText}" Foreground="{Binding StatusColor}"/>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="监听" Width="56">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <CheckBox Content="开" IsChecked="{Binding Enabled, Mode=OneWay}"
-                                              HorizontalAlignment="Center"
-                                              PreviewMouseLeftButtonDown="ProcessMonitorToggle_PreviewMouseLeftButtonDown"/>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                        <DataGridTemplateColumn Header="操作" Width="50">
-                            <DataGridTemplateColumn.CellTemplate>
-                                <DataTemplate>
-                                    <Button Content="删除" Click="BtnDeleteProcess_Click" Tag="{Binding}" Width="40" Height="22"/>
-                                </DataTemplate>
-                            </DataGridTemplateColumn.CellTemplate>
-                        </DataGridTemplateColumn>
-                    </DataGrid.Columns>
-                </DataGrid>
+                    <TextBlock x:Name="txtLastCheckTime" Grid.Row="2" FontSize="12" Foreground="#888" Margin="0,0,0,12">上次检查时间: 从未检查</TextBlock>
 
-                <!-- 监控日志 -->
-                <GroupBox Header="监控日志" Grid.Row="4" Margin="0,8,0,0">
-                    <ListBox x:Name="lstProcessLog" Margin="5"/>
-                </GroupBox>
+                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
+                        <Button x:Name="btnCheckUpdate" Content="立即检查" Width="90" Height="30" Click="BtnCheckUpdate_Click"/>
+                        <CheckBox x:Name="chkAutoCheck" Content="启用定时检查" VerticalAlignment="Center" Margin="12,0,0,0"
+                                  Checked="ChkAutoCheck_Changed" Unchecked="ChkAutoCheck_Changed"/>
+                    </StackPanel>
 
-                <!-- 说明 -->
-                <TextBlock Grid.Row="5" Margin="0,8,0,0" FontSize="11" Foreground="#888">
-                    列表「监听」开关：打开=检测并自动启动，关闭=不检测。进程未运行时将直接启动，启动过程中显示 loading。
-                </TextBlock>
-            </Grid>
-        </TabItem>
+                    <CheckBox x:Name="chkAutoStart" Grid.Row="4" Content="开机自动启动" VerticalAlignment="Center"
+                              Checked="ChkAutoStart_Changed" Unchecked="ChkAutoStart_Changed"/>
+                </Grid>
+            </TabItem>
 
-        <!-- ===== Tab 3: 版本更新 ===== -->
-        <TabItem Header="版本更新">
-            <Grid Margin="5">
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+            <!-- ===== Tab 4: 账号管理 (仅 admin 可访问) ===== -->
+            <TabItem Header="账号管理">
+                <Grid Margin="5">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <!-- 版本卡片 -->
-                <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
-                    <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180">
-                        <StackPanel>
-                            <TextBlock x:Name="txtLocalVersion" FontSize="28" FontWeight="Bold" Foreground="#0078d4" HorizontalAlignment="Center">-</TextBlock>
-                            <TextBlock Text="当前本地版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                        </StackPanel>
-                    </Border>
-                    <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180" Margin="12,0,0,0">
-                        <StackPanel>
-                            <TextBlock x:Name="txtCloudVersion" FontSize="28" FontWeight="Bold" Foreground="#107c10" HorizontalAlignment="Center">-</TextBlock>
-                            <TextBlock Text="云端最新版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                        </StackPanel>
-                    </Border>
-                </StackPanel>
+                    <ListBox x:Name="lstAccounts" Grid.Row="0" Margin="0,0,0,10">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Border Padding="10,8" BorderBrush="#E0E0E0" BorderThickness="0,0,0,1"
+                                        Width="620" HorizontalAlignment="Left">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <StackPanel Orientation="Horizontal">
+                                                <TextBlock FontWeight="Bold" FontSize="14">
+                                                    <Run Text="{Binding Name}"/>
+                                                </TextBlock>
+                                                <TextBlock Foreground="#888" Margin="8,0,0,0" FontSize="11"
+                                                           VerticalAlignment="Center">
+                                                    [<Run Text="{Binding Role}"/>]
+                                                </TextBlock>
+                                                <TextBlock Foreground="{Binding IsPasswordEncrypted, Converter={x:Null}}"
+                                                           FontSize="10" Margin="8,0,0,0" VerticalAlignment="Center"
+                                                           Text="🔒 已加密" ToolTip="密码已通过 DPAPI 加密存储"/>
+                                            </StackPanel>
+                                            <TextBlock FontSize="11" Foreground="#666" Margin="0,4,0,0">
+                                                账号: <Run Text="{Binding Username}"/>@<Run Text="{Binding Host}"/>:<Run Text="{Binding Port}"/>
+                                            </TextBlock>
+                                            <TextBlock FontSize="11" Foreground="#666">
+                                                远程路径: <Run Text="{Binding RemoteRoot}"/>
+                                            </TextBlock>
+                                        </StackPanel>
+                                        <Button Grid.Column="1" Content="修改密码" Width="70" Height="26"
+                                                Click="BtnChangePassword_Click" Tag="{Binding}" VerticalAlignment="Center"/>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
 
-                <!-- 新版本提示横幅 -->
-                <Border x:Name="borderNewVersion" Grid.Row="1" Background="#E8F4E8" Padding="10" CornerRadius="4" Margin="0,0,0,12" Visibility="Collapsed">
-                    <TextBlock x:Name="txtNewVersionInfo" FontSize="13"/>
-                </Border>
-
-                <!-- 上次检查时间 -->
-                <TextBlock x:Name="txtLastCheckTime" Grid.Row="2" FontSize="12" Foreground="#888" Margin="0,0,0,12">上次检查时间: 从未检查 | 检查间隔: 30 分钟</TextBlock>
-
-                <!-- 按钮和开关 -->
-                <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
-                    <Button x:Name="btnCheckUpdate" Content="立即检查" Width="90" Height="30" Click="BtnCheckUpdate_Click"/>
-                    <CheckBox x:Name="chkAutoCheck" Content="启用定时检查（每30分钟）" VerticalAlignment="Center" Margin="12,0,0,0"
-                              Checked="ChkAutoCheck_Changed" Unchecked="ChkAutoCheck_Changed"/>
-                </StackPanel>
-
-                <!-- 开机自启动 -->
-                <CheckBox x:Name="chkAutoStart" Grid.Row="4" Content="开机自动启动" VerticalAlignment="Center"
-                          Checked="ChkAutoStart_Changed" Unchecked="ChkAutoStart_Changed"/>
-            </Grid>
-        </TabItem>
-    </TabControl>
+                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center">
+                        <Button x:Name="btnAddAccount" Content="+ 添加账号" Width="100" Height="30"
+                                Click="BtnAddAccount_Click"/>
+                    </StackPanel>
+                </Grid>
+            </TabItem>
+        </TabControl>
+    </Grid>
 </Window>

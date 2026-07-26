@@ -8,9 +8,13 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
+using System.Windows.Controls;
 using System.Xml;
 using System.Xml.Serialization;
 using Microsoft.Win32;
+using MoveImageForm.Models;
+using MoveImageForm.Services;
+using MoveImageForm.Views;
 
 namespace MoveImageForm
 {
@@ -21,6 +25,9 @@ namespace MoveImageForm
         private bool _isRunning;
         private DateTime _lastMoveTime;
         private System.Windows.Forms.NotifyIcon _notifyIcon;
+
+        // SFTP 会话管理
+        private readonly SessionManager _session = new SessionManager();
 
         // 进程监听
         private System.Windows.Threading.DispatcherTimer _processTimer;
@@ -38,11 +45,240 @@ namespace MoveImageForm
         private string _latestCloudDate;
         private string _latestCloudNote;
 
+        private bool _isLoadingConfig;
+
         public MainWindow()
         {
             InitializeComponent();
             InitNotifyIcon();
+            _session.LoginStateChanged += OnLoginStateChanged;
         }
+
+        #region Login / Session Management
+
+        private void BtnLogin_Click(object sender, RoutedEventArgs e)
+        {
+            if (_session.IsLoggedIn)
+            {
+                ShowLogoutMenu();
+                return;
+            }
+
+            // 收集 SourcePath 中引用的 Profile
+            UpdateConfigFromUI();
+            var activeProfileNames = _config.GetActiveProfileNames().Distinct().ToList();
+            if (activeProfileNames.Count == 0)
+            {
+                MessageBox.Show("请先在源文件夹区域为监控目录分配账号，再进行登录。", "提示",
+                    MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // 尝试用存储的（DPAPI 解密后）密码自动连接
+            int connected = 0;
+            var failedProfiles = new List<SftpProfile>();
+
+            foreach (var name in activeProfileNames)
+            {
+                var profile = _config.FindProfile(name);
+                if (profile == null) continue;
+
+                try
+                {
+                    string password = profile.GetPlainPassword();
+                    if (!string.IsNullOrEmpty(password))
+                    {
+                        _session.Login(profile, password);
+                        connected++;
+                        Log($"[系统] 自动连接: {profile.Name} → {profile.RemoteRoot}");
+                        continue;
+                    }
+                }
+                catch { }
+
+                failedProfiles.Add(profile);
+            }
+
+            // 如果有未连接的 Profile（密码为空或错误），弹出登录框手动输入
+            if (failedProfiles.Count > 0)
+            {
+                var dialog = new LoginDialog(failedProfiles);
+                dialog.Owner = this;
+                if (dialog.ShowDialog() == true)
+                {
+                    try
+                    {
+                        _session.Login(dialog.SelectedProfile, dialog.Password);
+                        connected++;
+                        Log($"[系统] 手动连接: {dialog.SelectedProfile.Name} → {dialog.SelectedProfile.RemoteRoot}");
+
+                        // 更新 Profile 密码并加密保存
+                        dialog.SelectedProfile.Password = dialog.Password;
+                        dialog.SelectedProfile.EncryptPassword();
+                        SaveConfig();
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show($"连接失败: {ex.Message}", "登录失败",
+                            MessageBoxButton.OK, MessageBoxImage.Error);
+                    }
+                }
+
+                // 尝试连接剩余的
+                foreach (var profile in failedProfiles)
+                {
+                    if (_session.IsProfileConnected(profile.Name)) continue;
+                    try
+                    {
+                        string password = profile.GetPlainPassword();
+                        if (!string.IsNullOrEmpty(password))
+                        {
+                            _session.Login(profile, password);
+                            connected++;
+                            Log($"[系统] 自动连接: {profile.Name} → {profile.RemoteRoot}");
+                        }
+                    }
+                    catch { }
+                }
+            }
+
+            if (connected > 0)
+                Log($"[系统] 已连接 {connected} 个账号。");
+            else
+                Log("[系统] 登录失败，未连接任何账号。");
+
+            UpdateTransferStatusBar();
+        }
+
+        private void ShowLogoutMenu()
+        {
+            var menu = new ContextMenu();
+
+            foreach (var name in _session.ConnectedProfiles)
+            {
+                var item = new MenuItem { Header = $"已连接: {name}" };
+                item.IsEnabled = false;
+                item.FontWeight = FontWeights.Bold;
+                menu.Items.Add(item);
+            }
+            menu.Items.Add(new Separator());
+
+            var logoutItem = new MenuItem { Header = "登出全部" };
+            logoutItem.Click += (s, args) =>
+            {
+                _session.Logout();
+                Log("[系统] 已登出全部账号");
+            };
+            menu.Items.Add(logoutItem);
+
+            var switchItem = new MenuItem { Header = "切换账号..." };
+            switchItem.Click += (s, args) =>
+            {
+                _session.Logout();
+                BtnLogin_Click(null, null);
+            };
+            menu.Items.Add(switchItem);
+
+            menu.IsOpen = true;
+        }
+
+        private void OnLoginStateChanged()
+        {
+            Dispatcher.Invoke(() =>
+            {
+                UpdateLoginButton();
+                ApplyRoleRestrictions();
+                UpdateTransferStatusBar();
+            });
+        }
+
+        private void UpdateLoginButton()
+        {
+            if (_session.IsLoggedIn)
+            {
+                int count = _session.ConnectedProfiles.Count;
+                string label = count == 1
+                    ? _session.ConnectedProfiles.First()
+                    : $"已连接 {count} 个账号";
+                btnLogin.Content = $"{label} ▼";
+                spLoginStatus.Visibility = Visibility.Visible;
+
+                var parts = new List<string>();
+                foreach (var name in _session.ConnectedProfiles)
+                {
+                    var p = _config.FindProfile(name);
+                    if (p != null)
+                        parts.Add($"{p.Name}({p.Role})→{p.RemoteRoot}");
+                }
+                txtLoginInfo.Text = string.Join(" | ", parts);
+            }
+            else
+            {
+                btnLogin.Content = "登录";
+                spLoginStatus.Visibility = Visibility.Collapsed;
+                txtLoginInfo.Text = "";
+            }
+        }
+
+        private void ApplyRoleRestrictions()
+        {
+            string role = _session.CurrentRole;
+
+            bool canUpload = RoleEnforcer.CanUpload(role);
+            bool canChooseMode = RoleEnforcer.CanChooseTransferMode(role);
+
+            rbAppendMode.IsEnabled = canUpload;
+            rbCopyMode.IsEnabled = canChooseMode;
+            rbCutMode.IsEnabled = canChooseMode;
+            btnStart.IsEnabled = canUpload;
+
+            string forced = RoleEnforcer.ForcedTransferMode(role);
+            if (forced == "Append") rbAppendMode.IsChecked = true;
+            if (forced == "None") btnStart.IsEnabled = false;
+
+            btnCheckUpdate.IsEnabled = RoleEnforcer.CanCheckUpdate(_session.IsLoggedIn);
+        }
+
+        private void UpdateTransferStatusBar()
+        {
+            if (_session.IsLoggedIn)
+            {
+                borderTransferStatus.Visibility = Visibility.Visible;
+                borderNotLoggedIn.Visibility = Visibility.Collapsed;
+
+                var parts = new List<string>();
+                foreach (var name in _session.ConnectedProfiles)
+                {
+                    var p = _config.FindProfile(name);
+                    if (p != null)
+                        parts.Add($"{p.Name}({p.Role})→{p.RemoteRoot}");
+                }
+                txtTransferStatus.Text = $"已连接 {_session.ConnectedProfiles.Count} 个账号: {string.Join(" | ", parts)}";
+            }
+            else
+            {
+                borderTransferStatus.Visibility = Visibility.Collapsed;
+                borderNotLoggedIn.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void TabMain_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (tabMain.SelectedIndex == 3) // Tab 4 = 账号管理
+            {
+                if (!RoleEnforcer.CanManageAccounts(_session.CurrentRole))
+                {
+                    tabMain.SelectedIndex = e.RemovedItems.Count > 0
+                        ? tabMain.Items.IndexOf(e.RemovedItems[0]) : 0;
+                    MessageBox.Show("请使用管理员账号登录后再访问账号管理", "权限不足",
+                        MessageBoxButton.OK, MessageBoxImage.Warning);
+                }
+            }
+        }
+
+        #endregion
+
+        #region NotifyIcon
 
         private void InitNotifyIcon()
         {
@@ -67,20 +303,21 @@ namespace MoveImageForm
             };
 
             var contextMenu = new System.Windows.Forms.ContextMenuStrip();
-            
+
             var showItem = new System.Windows.Forms.ToolStripMenuItem("显示主界面");
-            showItem.Click += (s, e) => 
+            showItem.Click += (s, e) =>
             {
                 this.Show();
                 this.WindowState = WindowState.Normal;
                 this.Activate();
             };
-            
+
             var exitItem = new System.Windows.Forms.ToolStripMenuItem("完全退出");
             exitItem.Click += (s, e) =>
             {
                 UpdateConfigFromUI();
                 SaveConfig();
+                _session.Logout();
                 _notifyIcon.Visible = false;
                 _notifyIcon.Dispose();
                 System.Windows.Application.Current.Shutdown();
@@ -91,23 +328,18 @@ namespace MoveImageForm
             _notifyIcon.ContextMenuStrip = contextMenu;
         }
 
+        #endregion
+
+        #region Window Events
+
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
             LoadConfig();
             UpdateUIFromConfig();
-            
-            // 默认打开时自动开始搬运（如果配置了至少一组有效的路径）
-            bool pair1Valid = !string.IsNullOrWhiteSpace(_config.SourcePath) && !string.IsNullOrWhiteSpace(_config.DestPath) && Directory.Exists(_config.SourcePath);
-            bool pair2Valid = !string.IsNullOrWhiteSpace(_config.SourcePath2) && !string.IsNullOrWhiteSpace(_config.DestPath2) && Directory.Exists(_config.SourcePath2);
 
-            if (pair1Valid || pair2Valid)
-            {
-                StartMoving();
-            }
-            else
-            {
-                Log("未使用默认自动启动功能：没有找到完全配置好且存在的监控文件夹。");
-            }
+            // 不自动开始搬运 — 需要用户先登录
+            Log("请点击左上角「登录」连接 SFTP 服务器。");
+            Log("提示：每个监控文件夹可以绑定不同的 SFTP 账号和远程路径。");
 
             InitProcessMonitoring();
             InitVersionUpdate();
@@ -115,17 +347,20 @@ namespace MoveImageForm
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
         {
-            // 阻止默认关闭行为，改为隐藏到系统托盘
             e.Cancel = true;
             this.Hide();
-            
-            // 可以在此处弹出气泡提示告诉用户程序还在运行
-            _notifyIcon.ShowBalloonTip(2000, "提示", "程序已最小化到系统托盘并在后台继续搬运。", System.Windows.Forms.ToolTipIcon.Info);
+
+            _notifyIcon.ShowBalloonTip(2000, "提示",
+                "程序已最小化到系统托盘并在后台继续搬运。",
+                System.Windows.Forms.ToolTipIcon.Info);
 
             UpdateConfigFromUI();
             SaveConfig();
-            // 注意：这里去掉了 StopMoving()，因为我们要它在后台继续运行
         }
+
+        #endregion
+
+        #region Tab 1 — File Browsing
 
         private void BtnBrowseSource_Click(object sender, RoutedEventArgs e)
         {
@@ -133,21 +368,7 @@ namespace MoveImageForm
             {
                 dialog.Description = "选择监控文件夹";
                 if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
                     txtSourcePath.Text = dialog.SelectedPath;
-                }
-            }
-        }
-
-        private void BtnBrowseDest_Click(object sender, RoutedEventArgs e)
-        {
-            using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
-            {
-                dialog.Description = "选择目标文件夹1";
-                if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
-                    txtDestPath.Text = dialog.SelectedPath;
-                }
             }
         }
 
@@ -157,50 +378,69 @@ namespace MoveImageForm
             {
                 dialog.Description = "选择监控文件夹2";
                 if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
                     txtSourcePath2.Text = dialog.SelectedPath;
-                }
             }
         }
 
-        private void BtnBrowseDest2_Click(object sender, RoutedEventArgs e)
-        {
-            using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
-            {
-                dialog.Description = "选择目标文件夹2";
-                if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
-                    txtDestPath2.Text = dialog.SelectedPath;
-                }
-            }
-        }
+        #endregion
+
+        #region Tab 1 — File Transfer (SFTP)
 
         private void BtnStart_Click(object sender, RoutedEventArgs e)
         {
             StartMoving();
         }
 
+        /// <summary>获取指定 sourceKey 对应的 SFTP 会话（自动重连）</summary>
+        private ISftpService GetOrReconnectSession(string sourceKey)
+        {
+            var profile = _config.GetProfileForSource(sourceKey);
+            if (profile == null) return null;
+
+            var session = _session.GetSession(profile.Name);
+            if (session != null && session.IsConnected) return session;
+
+            // 尝试用缓存的密码重连
+            if (_session.Reconnect(profile.Name))
+                return _session.GetSession(profile.Name);
+
+            return null;
+        }
+
         private void StartMoving()
         {
-            bool pair1Valid = !string.IsNullOrWhiteSpace(txtSourcePath.Text) && !string.IsNullOrWhiteSpace(txtDestPath.Text);
-            bool pair2Valid = !string.IsNullOrWhiteSpace(txtSourcePath2.Text) && !string.IsNullOrWhiteSpace(txtDestPath2.Text);
-            
+            UpdateConfigFromUI();
+
+            var activeProfiles = _config.GetActiveProfileNames().Distinct().ToList();
+            if (activeProfiles.Count == 0)
+            {
+                MessageBox.Show("请先在源文件夹区域为监控目录分配账号！");
+                return;
+            }
+
+            if (!_session.IsLoggedIn)
+            {
+                MessageBox.Show("请先点击左上角「登录」连接 SFTP 服务器！");
+                return;
+            }
+
+            string role = _session.CurrentRole;
+            if (!RoleEnforcer.CanUpload(role))
+            {
+                MessageBox.Show($"当前账号「{_session.CurrentRole}」没有上传权限！", "权限不足",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+
+            bool pair1Valid = !string.IsNullOrWhiteSpace(txtSourcePath.Text) && Directory.Exists(txtSourcePath.Text);
+            bool pair2Valid = !string.IsNullOrWhiteSpace(txtSourcePath2.Text) && Directory.Exists(txtSourcePath2.Text);
+
             if (!pair1Valid && !pair2Valid)
             {
-                MessageBox.Show("请至少设置一组完整的监控文件夹和目标文件夹！");
+                MessageBox.Show("请至少设置一组有效的监控文件夹！");
                 return;
             }
 
-            bool pair1Exists = pair1Valid && Directory.Exists(txtSourcePath.Text);
-            bool pair2Exists = pair2Valid && Directory.Exists(txtSourcePath2.Text);
-
-            if (!pair1Exists && !pair2Exists)
-            {
-                MessageBox.Show("配置的监控文件夹不存在！");
-                return;
-            }
-
-            UpdateConfigFromUI();
             SaveConfig();
 
             _isRunning = true;
@@ -211,7 +451,7 @@ namespace MoveImageForm
             _cancellationTokenSource = new CancellationTokenSource();
             _lastMoveTime = DateTime.Now;
 
-            Log("开始监控...");
+            Log("开始监控 (SFTP)...");
             Task.Run(() => MonitorLoop(_cancellationTokenSource.Token));
         }
 
@@ -240,11 +480,12 @@ namespace MoveImageForm
         private void SetUIEnabled(bool enabled)
         {
             txtSourcePath.IsEnabled = enabled;
-            txtDestPath.IsEnabled = enabled;
             txtSourcePath2.IsEnabled = enabled;
-            txtDestPath2.IsEnabled = enabled;
-            rbCutMode.IsEnabled = enabled;
+            cmbSource1Profile.IsEnabled = enabled;
+            cmbSource2Profile.IsEnabled = enabled;
+            rbAppendMode.IsEnabled = enabled;
             rbCopyMode.IsEnabled = enabled;
+            rbCutMode.IsEnabled = enabled;
             chkTimeRule.IsEnabled = enabled;
             txtTimeInterval.IsEnabled = enabled;
             chkSizeRule.IsEnabled = enabled;
@@ -253,56 +494,6 @@ namespace MoveImageForm
             txtCountLimit.IsEnabled = enabled;
             chkEmptyFolderRule.IsEnabled = enabled;
             txtEmptyFolderHours.IsEnabled = enabled;
-            // buttons for browse are in grid, hard to access by name if not named, but we can just disable the textboxes
-        }
-
-        private static readonly object _logLock = new object();
-
-        private void Log(string message)
-        {
-            AppendLog(lstLog, message);
-        }
-
-        private void LogProcess(string message)
-        {
-            AppendLog(lstProcessLog, message);
-        }
-
-        private void AppendLog(System.Windows.Controls.ListBox listBox, string message)
-        {
-            string timeStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-            string logMessage = $"[{timeStamp}] {message}";
-
-            Dispatcher.InvokeAsync(() =>
-            {
-                listBox.Items.Add(logMessage);
-                if (listBox.Items.Count > 1000)
-                {
-                    listBox.Items.RemoveAt(0);
-                }
-                listBox.ScrollIntoView(listBox.Items[listBox.Items.Count - 1]);
-            });
-
-            Task.Run(() =>
-            {
-                try
-                {
-                    lock (_logLock)
-                    {
-                        string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
-                        if (!Directory.Exists(logDir))
-                        {
-                            Directory.CreateDirectory(logDir);
-                        }
-
-                        string logFile = Path.Combine(logDir, $"Log_{DateTime.Now:yyyy-MM-dd}.txt");
-                        File.AppendAllText(logFile, logMessage + Environment.NewLine);
-                    }
-                }
-                catch
-                {
-                }
-            });
         }
 
         private async Task MonitorLoop(CancellationToken token)
@@ -311,51 +502,144 @@ namespace MoveImageForm
             {
                 try
                 {
-                    bool timeTriggered = _config.EnableTimeRule && (DateTime.Now - _lastMoveTime).TotalSeconds >= _config.TimeIntervalSeconds;
+                    bool timeTriggered = _config.EnableTimeRule &&
+                        (DateTime.Now - _lastMoveTime).TotalSeconds >= _config.TimeIntervalSeconds;
                     bool movedAny = false;
 
-                    // 检查第一组
-                    if (IsValidPair(_config.SourcePath, _config.DestPath))
+                    // SourcePath 1
+                    if (Directory.Exists(_config.SourcePath) && !string.IsNullOrWhiteSpace(_config.SourcePath1Profile))
                     {
-                        if (timeTriggered || ShouldMovePair(_config.SourcePath, _config.DestPath))
+                        var sftp = GetOrReconnectSession("SourcePath");
+                        if (sftp != null)
                         {
-                            if (timeTriggered) Log($"[{_config.SourcePath}] 触发时间规则...");
-                            await MoveFilesAsync(_config.SourcePath, _config.DestPath, token);
-                            if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath, _config.EmptyFolderHours, token);
-                            movedAny = true;
+                            if (timeTriggered || ShouldMoveFromSource(_config.SourcePath, sftp))
+                            {
+                                if (timeTriggered) Log($"[{_config.SourcePath}] 触发时间规则...");
+                                await MoveFilesToSftpAsync(_config.SourcePath, sftp, token);
+                                if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath, _config.EmptyFolderHours, token);
+                                movedAny = true;
+                            }
+                        }
+                        else
+                        {
+                            Log($"[{_config.SourcePath}] SFTP 未连接 ({_config.SourcePath1Profile})，跳过");
                         }
                     }
 
-                    // 检查第二组
-                    if (IsValidPair(_config.SourcePath2, _config.DestPath2))
+                    // SourcePath 2
+                    if (Directory.Exists(_config.SourcePath2) && !string.IsNullOrWhiteSpace(_config.SourcePath2Profile))
                     {
-                        if (timeTriggered || ShouldMovePair(_config.SourcePath2, _config.DestPath2))
+                        var sftp = GetOrReconnectSession("SourcePath2");
+                        if (sftp != null)
                         {
-                            if (timeTriggered) Log($"[{_config.SourcePath2}] 触发时间规则...");
-                            await MoveFilesAsync(_config.SourcePath2, _config.DestPath2, token);
-                            if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath2, _config.EmptyFolderHours, token);
-                            movedAny = true;
+                            if (timeTriggered || ShouldMoveFromSource(_config.SourcePath2, sftp))
+                            {
+                                if (timeTriggered) Log($"[{_config.SourcePath2}] 触发时间规则...");
+                                await MoveFilesToSftpAsync(_config.SourcePath2, sftp, token);
+                                if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath2, _config.EmptyFolderHours, token);
+                                movedAny = true;
+                            }
+                        }
+                        else
+                        {
+                            string profileName = _config.SourcePath2Profile;
+                            Log($"[{_config.SourcePath2}] SFTP 未连接 ({profileName})，跳过");
                         }
                     }
 
                     if (movedAny)
-                    {
                         _lastMoveTime = DateTime.Now;
-                    }
                 }
                 catch (Exception ex)
                 {
                     Log($"监控异常: {ex.Message}");
                 }
 
-                // 每秒检查一次条件
                 await Task.Delay(1000, token);
             }
         }
 
-        private bool IsValidPair(string source, string dest)
+        private bool ShouldMoveFromSource(string source, ISftpService sftp)
         {
-            return !string.IsNullOrWhiteSpace(source) && !string.IsNullOrWhiteSpace(dest) && Directory.Exists(source);
+            if (!_config.EnableSizeRule && !_config.EnableCountRule)
+                return false;
+
+            DirectoryInfo di = new DirectoryInfo(source);
+            if (!di.Exists) return false;
+
+            FileInfo[] files = di.GetFiles("*", SearchOption.AllDirectories);
+            long totalSize = files.Sum(f => f.Length);
+            int fileCount = files.Length;
+
+            if (_config.EnableCountRule && fileCount >= _config.CountLimit)
+            {
+                Log($"[{source}] 触发文件数量规则 (当前 {fileCount} 个)，开始上传...");
+                return true;
+            }
+            if (_config.EnableSizeRule && totalSize >= _config.SizeLimitMB * 1024 * 1024)
+            {
+                Log($"[{source}] 触发文件空间规则 (当前 {totalSize / 1024.0 / 1024.0:F2} MB)，开始上传...");
+                return true;
+            }
+            return false;
+        }
+
+        private Task MoveFilesToSftpAsync(string source, ISftpService sftp, CancellationToken token)
+        {
+            return Task.Run(() =>
+            {
+                try
+                {
+                    DirectoryInfo dir = new DirectoryInfo(source);
+                    FileInfo[] files = dir.GetFiles("*", SearchOption.AllDirectories);
+
+                    string role = _session.CurrentRole;
+                    bool isAppend = RoleEnforcer.ForcedTransferMode(role) == "Append"
+                        || rbAppendMode.IsChecked == true;
+                    bool isCopy = rbCopyMode.IsChecked == true
+                        && RoleEnforcer.CanChooseTransferMode(role);
+                    bool isCut = rbCutMode.IsChecked == true
+                        && RoleEnforcer.CanChooseTransferMode(role);
+
+                    int success = 0, skip = 0, fail = 0;
+
+                    foreach (FileInfo file in files)
+                    {
+                        if (token.IsCancellationRequested) return;
+                        try
+                        {
+                            string relPath = file.FullName.Substring(source.Length)
+                                .TrimStart('\\').Replace('\\', '/');
+
+                            // Copy 模式：先做增量比对，跳过未变化的文件
+                            if (isCopy && sftp.IsTargetFileCurrent(file.FullName, relPath))
+                            {
+                                skip++;
+                                continue;
+                            }
+
+                            if (sftp.UploadFile(file.FullName, relPath, appendOnly: isAppend))
+                            {
+                                success++;
+                                if (isCut) { try { file.Delete(); } catch { } }
+                            }
+                            else skip++;
+                        }
+                        catch (Exception ex)
+                        {
+                            fail++;
+                            Log($"上传 {file.Name} 失败: {ex.Message}");
+                        }
+                    }
+
+                    string modeText = isAppend ? "追加" : (isCut ? "剪切" : "复制");
+                    Log($"上传完成 ({modeText}): 成功 {success}, 跳过 {skip}, 失败 {fail}");
+                }
+                catch (Exception ex)
+                {
+                    Log($"上传异常: {ex.Message}");
+                }
+            }, token);
         }
 
         private void CleanEmptyFolders(string startLocation, double hoursOld, CancellationToken token)
@@ -394,157 +678,57 @@ namespace MoveImageForm
             }
         }
 
-        private bool ShouldMovePair(string source, string dest)
+        #endregion
+
+        #region Logging
+
+        private static readonly object _logLock = new object();
+
+        private void Log(string message)
         {
-            if (_config.EnableSizeRule || _config.EnableCountRule)
+            AppendLog(lstLog, message);
+        }
+
+        private void LogProcess(string message)
+        {
+            AppendLog(lstProcessLog, message);
+        }
+
+        private void AppendLog(System.Windows.Controls.ListBox listBox, string message)
+        {
+            string timeStamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            string logMessage = $"[{timeStamp}] {message}";
+
+            Dispatcher.InvokeAsync(() =>
             {
-                long totalSize = 0;
-                int fileCount = 0;
+                listBox.Items.Add(logMessage);
+                if (listBox.Items.Count > 1000)
+                    listBox.Items.RemoveAt(0);
+                listBox.ScrollIntoView(listBox.Items[listBox.Items.Count - 1]);
+            });
 
-                DirectoryInfo di = new DirectoryInfo(source);
-                if (di.Exists)
+            Task.Run(() =>
+            {
+                try
                 {
-                    FileInfo[] files = di.GetFiles("*", SearchOption.AllDirectories);
-                    if (IsCopyMode())
+                    lock (_logLock)
                     {
-                        files = files.Where(file => !IsTargetFileCurrent(file, source, dest)).ToArray();
-                    }
+                        string logDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Logs");
+                        if (!Directory.Exists(logDir))
+                            Directory.CreateDirectory(logDir);
 
-                    fileCount = files.Length;
-                    totalSize = files.Sum(f => f.Length);
-
-                    if (_config.EnableCountRule && fileCount >= _config.CountLimit)
-                    {
-                        Log($"[{source}] 触发文件数量规则 (当前 {fileCount} 个)，开始{GetTransferActionText()}...");
-                        return true;
-                    }
-
-                    if (_config.EnableSizeRule && totalSize >= _config.SizeLimitMB * 1024 * 1024)
-                    {
-                        Log($"[{source}] 触发文件空间规则 (当前 {totalSize / 1024.0 / 1024.0:F2} MB)，开始{GetTransferActionText()}...");
-                        return true;
+                        string logFile = Path.Combine(logDir, $"Log_{DateTime.Now:yyyy-MM-dd}.txt");
+                        File.AppendAllText(logFile, logMessage + Environment.NewLine);
                     }
                 }
-            }
-
-            return false;
+                catch { }
+            });
         }
 
-        private async Task MoveFilesAsync(string source, string dest, CancellationToken token)
-        {
-            try
-            {
-                if (!Directory.Exists(dest))
-                {
-                    Directory.CreateDirectory(dest);
-                }
+        #endregion
 
-                DirectoryInfo dir = new DirectoryInfo(source);
-                FileInfo[] files = dir.GetFiles("*", SearchOption.AllDirectories);
-
-                bool copyMode = IsCopyMode();
-                int successCount = 0;
-                int skipCount = 0;
-                int failCount = 0;
-
-                foreach (FileInfo file in files)
-                {
-                    if (token.IsCancellationRequested) break;
-
-                    try
-                    {
-                        string relativePath = file.FullName.Substring(source.Length).TrimStart('\\');
-                        string targetPath = Path.Combine(dest, relativePath);
-                        string targetDir = Path.GetDirectoryName(targetPath);
-
-                        if (!Directory.Exists(targetDir))
-                        {
-                            Directory.CreateDirectory(targetDir);
-                        }
-
-                        if (copyMode && IsTargetFileCurrent(file, source, dest))
-                        {
-                            skipCount++;
-                            continue;
-                        }
-
-                        // 目标文件存在且需要更新时，先删除后再写入，避免只读文件导致覆盖失败
-                        if (File.Exists(targetPath))
-                        {
-                            FileInfo targetInfo = new FileInfo(targetPath);
-                            if (targetInfo.IsReadOnly)
-                            {
-                                targetInfo.IsReadOnly = false;
-                            }
-                            File.Delete(targetPath);
-                        }
-
-                        if (copyMode)
-                        {
-                            File.Copy(file.FullName, targetPath);
-                            File.SetLastWriteTimeUtc(targetPath, file.LastWriteTimeUtc);
-                        }
-                        else
-                        {
-                            File.Move(file.FullName, targetPath);
-                        }
-                        successCount++;
-                    }
-                    catch (IOException)
-                    {
-                        // 文件可能被占用，忽略，下次再处理
-                        failCount++;
-                    }
-                    catch (UnauthorizedAccessException)
-                    {
-                        // 没有权限、文件被系统锁定或只读，忽略，下次再处理
-                        failCount++;
-                    }
-                    catch (Exception ex)
-                    {
-                        Log($"{GetTransferActionText()}文件 {file.Name} 时出错: {ex.Message}");
-                        failCount++;
-                    }
-                }
-
-                if (successCount > 0 || failCount > 0)
-                {
-                    string skipMessage = copyMode ? $", 跳过(已存在且未变化) {skipCount} 个" : "";
-                    Log($"{GetTransferActionText()}完成: 成功 {successCount} 个{skipMessage}, 失败(或被占用) {failCount} 个");
-                }
-            }
-            catch (Exception ex)
-            {
-                Log($"{GetTransferActionText()}过程中发生异常: {ex.Message}");
-            }
-        }
-
-        private bool IsCopyMode()
-        {
-            return string.Equals(_config.TransferMode, "Copy", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private string GetTransferActionText()
-        {
-            return IsCopyMode() ? "复制" : "搬运";
-        }
-
-        private bool IsTargetFileCurrent(FileInfo sourceFile, string sourceRoot, string destRoot)
-        {
-            string relativePath = sourceFile.FullName.Substring(sourceRoot.Length).TrimStart('\\');
-            string targetPath = Path.Combine(destRoot, relativePath);
-
-            if (!File.Exists(targetPath))
-            {
-                return false;
-            }
-
-            FileInfo targetFile = new FileInfo(targetPath);
-            return targetFile.Length == sourceFile.Length &&
-                   targetFile.LastWriteTimeUtc >= sourceFile.LastWriteTimeUtc;
-        }
-
-        #region Process Monitoring
+        #region Tab 2 — Process Monitoring
+        // (unchanged — process monitoring logic preserved from previous implementation)
 
         private string GetProcessNameFromPath(string path)
         {
@@ -742,6 +926,7 @@ namespace MoveImageForm
                 borderProcessStarting.Visibility = Visibility.Collapsed;
             }
         }
+
         private bool IsProcessRunning(ProcessViewModel proc)
         {
             try
@@ -903,7 +1088,7 @@ namespace MoveImageForm
             }
         }
 
-        private void CmbProcessInterval_Changed(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+        private void CmbProcessInterval_Changed(object sender, SelectionChangedEventArgs e)
         {
             if (_config == null || _isInitializingProcessMonitoring) return;
 
@@ -928,9 +1113,7 @@ namespace MoveImageForm
                 dialog.Filter = "可执行文件 (*.exe)|*.exe|所有文件 (*.*)|*.*";
                 dialog.CheckFileExists = true;
                 if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                {
                     txtProcessPath.Text = dialog.FileName;
-                }
             }
         }
 
@@ -1031,15 +1214,13 @@ namespace MoveImageForm
         {
             _config.WatchProcesses.Clear();
             foreach (var vm in _processList)
-            {
                 _config.WatchProcesses.Add(vm.ToProcessInfo());
-            }
             SaveConfig();
         }
 
         #endregion
 
-        #region Version Update
+        #region Tab 3 — Version Update (SFTP)
 
         private void InitVersionUpdate()
         {
@@ -1048,9 +1229,7 @@ namespace MoveImageForm
             txtLocalVersion.Text = $"{ver.Major}.{ver.Minor}.{ver.Build}";
 
             if (!string.IsNullOrWhiteSpace(_config.LastCheckTime))
-            {
                 txtLastCheckTime.Text = $"上次检查时间: {_config.LastCheckTime} | 检查间隔: {_config.CheckIntervalMinutes} 分钟";
-            }
 
             chkAutoStart.IsChecked = _config.AutoStart;
 
@@ -1080,55 +1259,35 @@ namespace MoveImageForm
         {
             try
             {
-                string cloudPath = _config.CloudPath;
-                if (string.IsNullOrWhiteSpace(cloudPath))
+                var sftp = _session.ActiveSftp;
+                if (sftp == null)
                 {
                     Dispatcher.InvokeAsync(() =>
                     {
-                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端路径未配置)";
-                        txtCloudVersion.Text = "未配置";
+                        txtCloudVersion.Text = "未登录";
+                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (请先登录)";
                     });
-                    _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    SaveConfig();
                     return;
                 }
 
-                string driveLetter = "Y:";
-                if (!Directory.Exists(driveLetter + "\\"))
+                if (!sftp.IsConnected)
                 {
-                    string userPass = "";
-                    if (!string.IsNullOrWhiteSpace(_config.CloudUser))
-                    {
-                        userPass = $" /user:{_config.CloudUser}";
-                        if (!string.IsNullOrWhiteSpace(_config.CloudPassword))
-                            userPass += $" {_config.CloudPassword}";
-                    }
-
-                    var psi = new ProcessStartInfo("net", $"use {driveLetter} \"{cloudPath}\"{userPass}")
-                    {
-                        CreateNoWindow = true,
-                        UseShellExecute = false,
-                        RedirectStandardOutput = true,
-                        RedirectStandardError = true
-                    };
-                    var proc = Process.Start(psi);
-                    proc?.WaitForExit(10000);
+                    try { sftp.Connect(); } catch { }
                 }
 
-                string jsonPath = Path.Combine(driveLetter + "\\", "version.json");
-                if (!File.Exists(jsonPath))
+                if (!sftp.FileExists("versions/version.json"))
                 {
                     Dispatcher.InvokeAsync(() =>
                     {
-                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端不可达)";
                         txtCloudVersion.Text = "不可达";
+                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端不可达)";
                     });
                     _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
                     SaveConfig();
                     return;
                 }
 
-                string jsonText = File.ReadAllText(jsonPath);
+                string jsonText = sftp.ReadAllText("versions/version.json");
                 var jss = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var data = jss.Deserialize<dynamic>(jsonText);
                 string latestVersion = data["latest"]?.ToString() ?? "";
@@ -1214,9 +1373,7 @@ namespace MoveImageForm
                 MessageBoxButton.YesNo, MessageBoxImage.Information);
 
             if (result == MessageBoxResult.Yes)
-            {
                 StartUpdateDownload(version);
-            }
         }
 
         private async void StartUpdateDownload(string version)
@@ -1228,6 +1385,13 @@ namespace MoveImageForm
             {
                 try
                 {
+                    var sftp = _session.ActiveSftp;
+                    if (sftp == null)
+                    {
+                        Dispatcher.InvokeAsync(() => Log("更新下载失败: 未登录"));
+                        return;
+                    }
+
                     string baseDir = Path.GetDirectoryName(
                         System.Reflection.Assembly.GetExecutingAssembly().Location);
                     string appRoot = Path.GetFullPath(Path.Combine(baseDir, "..", ".."));
@@ -1237,13 +1401,20 @@ namespace MoveImageForm
                         Directory.Delete(tempDir, true);
                     Directory.CreateDirectory(tempDir);
 
-                    string cloudVerPath = Path.Combine("Y:", version);
-                    CopyDirectory(cloudVerPath, tempDir);
+                    string remoteVerPath = "versions/" + version;
+                    if (!sftp.FileExists(remoteVerPath + "/MoveImageForm.exe"))
+                    {
+                        Dispatcher.InvokeAsync(() =>
+                            Log("更新下载失败: 云端版本文件不完整"));
+                        return;
+                    }
+
+                    DownloadDirectoryFromSftp(sftp, remoteVerPath, tempDir);
 
                     if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
                     {
                         Dispatcher.InvokeAsync(() =>
-                            Log("更新下载失败: 云端版本文件不完整"));
+                            Log("更新下载失败: 下载后文件不完整"));
                         return;
                     }
 
@@ -1280,6 +1451,28 @@ namespace MoveImageForm
             });
         }
 
+        private void DownloadDirectoryFromSftp(ISftpService sftp, string remoteDir, string localDir)
+        {
+            var items = sftp.ListDirectory(remoteDir);
+            foreach (var item in items)
+            {
+                if (item.Name == "." || item.Name == "..") continue;
+
+                string remotePath = remoteDir + "/" + item.Name;
+                string localPath = Path.Combine(localDir, item.Name);
+
+                if (item.IsDirectory)
+                {
+                    Directory.CreateDirectory(localPath);
+                    DownloadDirectoryFromSftp(sftp, remotePath, localPath);
+                }
+                else
+                {
+                    sftp.DownloadFile(remotePath, localPath);
+                }
+            }
+        }
+
         private string GenerateUpdateBat(string appRoot, string version)
         {
             string versionsDir = Path.Combine(appRoot, "versions");
@@ -1313,24 +1506,6 @@ if exist ""{launcherPath}"" (
 
 del ""%~f0"" & exit
 ";
-        }
-
-        private void CopyDirectory(string sourceDir, string destDir)
-        {
-            if (!Directory.Exists(destDir))
-                Directory.CreateDirectory(destDir);
-
-            foreach (var file in Directory.GetFiles(sourceDir))
-            {
-                string destFile = Path.Combine(destDir, Path.GetFileName(file));
-                File.Copy(file, destFile, true);
-            }
-
-            foreach (var dir in Directory.GetDirectories(sourceDir))
-            {
-                string destSubDir = Path.Combine(destDir, Path.GetFileName(dir));
-                CopyDirectory(dir, destSubDir);
-            }
         }
 
         private void ChkAutoCheck_Changed(object sender, RoutedEventArgs e)
@@ -1403,6 +1578,49 @@ del ""%~f0"" & exit
 
         #endregion
 
+        #region Tab 4 — Account Management
+
+        private void BtnChangePassword_Click(object sender, RoutedEventArgs e)
+        {
+            var btn = (Button)sender;
+            var profile = (SftpProfile)btn.Tag;
+
+            var dialog = new ChangePasswordDialog(profile.Name);
+            dialog.Owner = this;
+            if (dialog.ShowDialog() == true)
+            {
+                profile.Password = dialog.NewPassword;
+                profile.EncryptPassword();
+                SaveConfig();
+                RefreshAccountList();
+                Log($"[系统] 账号「{profile.Name}」密码已修改（已加密保存）");
+            }
+        }
+
+        private void BtnAddAccount_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new AddAccountDialog();
+            dialog.Owner = this;
+            if (dialog.ShowDialog() == true)
+            {
+                // 加密密码后保存
+                dialog.Profile.EncryptPassword();
+                _config.SftpProfiles.Add(dialog.Profile);
+                SaveConfig();
+                RefreshAccountList();
+                UpdateSourceProfileDropdowns();
+                Log($"[系统] 已添加账号「{dialog.Profile.Name}」({dialog.Profile.Role}) — 密码已加密");
+            }
+        }
+
+        private void RefreshAccountList()
+        {
+            lstAccounts.ItemsSource = null;
+            lstAccounts.ItemsSource = _config.SftpProfiles;
+        }
+
+        #endregion
+
         #region Configuration Management
 
         private string GetConfigFilePath()
@@ -1420,42 +1638,61 @@ del ""%~f0"" & exit
 
         private void LoadConfig()
         {
-            string path = GetConfigFilePath();
-            _config = new AppConfig();
-            bool needsSave = false;
-
-            if (File.Exists(path))
+            _isLoadingConfig = true;
+            try
             {
-                if (TryDeserializeAppConfig(path, out AppConfig loaded))
-                {
-                    _config = loaded;
-                }
-                else if (TryParseConfigXml(path, out loaded))
-                {
-                    _config = loaded;
-                    needsSave = true;
-                    Log("已从旧版 Config 格式读取配置，将自动转换为 AppConfig 格式。");
-                }
-                else
-                {
-                    BackupCorruptConfig(path);
-                }
-            }
+                string path = GetConfigFilePath();
+                _config = new AppConfig();
+                bool needsSave = false;
 
-            foreach (string legacyPath in GetLegacyConfigCandidates(path))
+                if (File.Exists(path))
+                {
+                    if (TryDeserializeAppConfig(path, out AppConfig loaded))
+                    {
+                        _config = loaded;
+                    }
+                    else if (TryParseConfigXml(path, out loaded))
+                    {
+                        _config = loaded;
+                        needsSave = true;
+                        Log("已从旧版 Config 格式读取配置，将自动转换。");
+                    }
+                    else
+                    {
+                        BackupCorruptConfig(path);
+                    }
+                }
+
+                foreach (string legacyPath in GetLegacyConfigCandidates(path))
+                {
+                    if (!TryLoadConfigFromAnyFormat(legacyPath, out AppConfig legacy))
+                        continue;
+
+                    if (MergeConfig(_config, legacy))
+                    {
+                        needsSave = true;
+                        Log($"已从 {Path.GetFileName(legacyPath)} 迁移缺失的配置项。");
+                    }
+                }
+
+                // 解密所有存储的密码
+                foreach (var profile in _config.SftpProfiles)
+                {
+                    if (profile.IsPasswordEncrypted)
+                    {
+                        // 密码保持加密状态在内存中也有问题 — 我们只在使用时才解密
+                        // 但为了 SaveConfig 时能正确处理，让加密密码留在内存中
+                        // 使用时通过 GetPlainPassword() 获取明文
+                    }
+                }
+
+                if (needsSave)
+                    SaveConfig();
+            }
+            finally
             {
-                if (!TryLoadConfigFromAnyFormat(legacyPath, out AppConfig legacy))
-                    continue;
-
-                if (MergeConfig(_config, legacy))
-                {
-                    needsSave = true;
-                    Log($"已从 {Path.GetFileName(legacyPath)} 迁移缺失的配置项。");
-                }
+                _isLoadingConfig = false;
             }
-
-            if (needsSave)
-                SaveConfig();
         }
 
         private string GetLocalConfigPath()
@@ -1516,9 +1753,9 @@ del ""%~f0"" & exit
                 config = new AppConfig
                 {
                     SourcePath = GetXmlText(doc, "SourcePath"),
-                    DestPath = GetXmlText(doc, "DestPath"),
                     SourcePath2 = GetXmlText(doc, "SourcePath2"),
-                    DestPath2 = GetXmlText(doc, "DestPath2"),
+                    SourcePath1Profile = GetXmlText(doc, "SourcePath1Profile"),
+                    SourcePath2Profile = GetXmlText(doc, "SourcePath2Profile"),
                     TransferMode = GetXmlText(doc, "TransferMode", "Cut"),
                     EnableTimeRule = GetXmlBool(doc, "EnableTimeRule", true),
                     TimeIntervalSeconds = GetXmlInt(doc, "TimeIntervalSeconds", 60),
@@ -1528,9 +1765,7 @@ del ""%~f0"" & exit
                     CountLimit = GetXmlInt(doc, "CountLimit", 1000),
                     EnableEmptyFolderRule = GetXmlBool(doc, "EnableEmptyFolderRule", false),
                     EmptyFolderHours = GetXmlDouble(doc, "EmptyFolderHours", 24.0),
-                    CloudPath = GetXmlText(doc, "CloudPath"),
-                    CloudUser = GetXmlText(doc, "CloudUser"),
-                    CloudPassword = GetXmlText(doc, "CloudPassword"),
+                    SftpProfiles = ParseSftpProfiles(doc),
                     CheckIntervalMinutes = GetXmlInt(doc, "CheckIntervalMinutes", 30),
                     AutoUpdate = GetXmlBool(doc, "AutoUpdate", false),
                     AutoStart = GetXmlBool(doc, "AutoStart", false),
@@ -1538,6 +1773,20 @@ del ""%~f0"" & exit
                     ProcessCheckIntervalSeconds = GetXmlInt(doc, "ProcessCheckIntervalSeconds", 5),
                     WatchProcesses = ParseWatchProcesses(doc)
                 };
+
+                // 兼容旧配置：没有 SourcePath1Profile 时，从 ActiveProfile 或旧格式回退
+                if (string.IsNullOrWhiteSpace(config.SourcePath1Profile) && !string.IsNullOrWhiteSpace(config.SourcePath))
+                {
+                    string activeProfile = GetXmlText(doc, "ActiveProfile");
+                    config.SourcePath1Profile = activeProfile;
+                }
+                if (string.IsNullOrWhiteSpace(config.SourcePath2Profile) && !string.IsNullOrWhiteSpace(config.SourcePath2))
+                {
+                    // SourcePath2 可能使用同一个 profile
+                    if (string.IsNullOrWhiteSpace(config.SourcePath2Profile))
+                        config.SourcePath2Profile = config.SourcePath1Profile;
+                }
+
                 return true;
             }
             catch
@@ -1546,12 +1795,33 @@ del ""%~f0"" & exit
             }
         }
 
+        private static List<SftpProfile> ParseSftpProfiles(XmlDocument doc)
+        {
+            var profiles = new List<SftpProfile>();
+            var nodes = doc.SelectNodes("//SftpProfiles/Profile");
+            if (nodes == null) return profiles;
+
+            foreach (XmlNode node in nodes)
+            {
+                profiles.Add(new SftpProfile
+                {
+                    Name = node.SelectSingleNode("Name")?.InnerText?.Trim() ?? "",
+                    Role = node.SelectSingleNode("Role")?.InnerText?.Trim() ?? "upload",
+                    Host = node.SelectSingleNode("Host")?.InnerText?.Trim() ?? "",
+                    Port = int.TryParse(node.SelectSingleNode("Port")?.InnerText?.Trim(), out int port) ? port : 22,
+                    Username = node.SelectSingleNode("Username")?.InnerText?.Trim() ?? "",
+                    Password = node.SelectSingleNode("Password")?.InnerText?.Trim() ?? "",
+                    RemoteRoot = node.SelectSingleNode("RemoteRoot")?.InnerText?.Trim() ?? "/"
+                });
+            }
+            return profiles;
+        }
+
         private static List<ProcessInfo> ParseWatchProcesses(XmlDocument doc)
         {
             var processes = new List<ProcessInfo>();
             var nodes = doc.SelectNodes("//WatchProcesses/Process");
-            if (nodes == null)
-                return processes;
+            if (nodes == null) return processes;
 
             foreach (XmlNode node in nodes)
             {
@@ -1599,57 +1869,24 @@ del ""%~f0"" & exit
         {
             bool changed = false;
             if (MergeString(target.SourcePath, source.SourcePath, out string sourcePath))
-            {
-                target.SourcePath = sourcePath;
-                changed = true;
-            }
-            if (MergeString(target.DestPath, source.DestPath, out string destPath))
-            {
-                target.DestPath = destPath;
-                changed = true;
-            }
+            { target.SourcePath = sourcePath; changed = true; }
             if (MergeString(target.SourcePath2, source.SourcePath2, out string sourcePath2))
-            {
-                target.SourcePath2 = sourcePath2;
-                changed = true;
-            }
-            if (MergeString(target.DestPath2, source.DestPath2, out string destPath2))
-            {
-                target.DestPath2 = destPath2;
-                changed = true;
-            }
-            if (MergeString(target.CloudPath, source.CloudPath, out string cloudPath))
-            {
-                target.CloudPath = cloudPath;
-                changed = true;
-            }
-            if (MergeString(target.CloudUser, source.CloudUser, out string cloudUser))
-            {
-                target.CloudUser = cloudUser;
-                changed = true;
-            }
-            if (MergeString(target.CloudPassword, source.CloudPassword, out string cloudPassword))
-            {
-                target.CloudPassword = cloudPassword;
-                changed = true;
-            }
+            { target.SourcePath2 = sourcePath2; changed = true; }
+            if (MergeString(target.SourcePath1Profile, source.SourcePath1Profile, out string sp1p))
+            { target.SourcePath1Profile = sp1p; changed = true; }
+            if (MergeString(target.SourcePath2Profile, source.SourcePath2Profile, out string sp2p))
+            { target.SourcePath2Profile = sp2p; changed = true; }
             if (MergeString(target.LastCheckTime, source.LastCheckTime, out string lastCheckTime))
-            {
-                target.LastCheckTime = lastCheckTime;
-                changed = true;
-            }
+            { target.LastCheckTime = lastCheckTime; changed = true; }
 
             if (string.IsNullOrWhiteSpace(target.TransferMode) && !string.IsNullOrWhiteSpace(source.TransferMode))
-            {
-                target.TransferMode = source.TransferMode;
-                changed = true;
-            }
+            { target.TransferMode = source.TransferMode; changed = true; }
+
+            if (target.SftpProfiles.Count == 0 && source.SftpProfiles != null && source.SftpProfiles.Count > 0)
+            { target.SftpProfiles = source.SftpProfiles; changed = true; }
 
             if (target.WatchProcesses.Count == 0 && source.WatchProcesses != null && source.WatchProcesses.Count > 0)
-            {
-                target.WatchProcesses = source.WatchProcesses;
-                changed = true;
-            }
+            { target.WatchProcesses = source.WatchProcesses; changed = true; }
 
             return changed;
         }
@@ -1682,8 +1919,17 @@ del ""%~f0"" & exit
 
         private void SaveConfig()
         {
+            if (_isLoadingConfig) return;
+
             try
             {
+                // 加密所有 Profile 密码后再序列化
+                foreach (var profile in _config.SftpProfiles)
+                {
+                    if (!profile.IsPasswordEncrypted && !string.IsNullOrEmpty(profile.Password))
+                        profile.EncryptPassword();
+                }
+
                 string path = GetConfigFilePath();
                 string tmpPath = path + ".tmp";
                 XmlSerializer serializer = new XmlSerializer(typeof(AppConfig));
@@ -1703,34 +1949,85 @@ del ""%~f0"" & exit
 
         private void UpdateUIFromConfig()
         {
-            txtSourcePath.Text = _config.SourcePath;
-            txtDestPath.Text = _config.DestPath;
-            txtSourcePath2.Text = _config.SourcePath2;
-            txtDestPath2.Text = _config.DestPath2;
+            _isLoadingConfig = true;
+            try
+            {
+                txtSourcePath.Text = _config.SourcePath;
+                txtSourcePath2.Text = _config.SourcePath2;
 
-            rbCopyMode.IsChecked = IsCopyMode();
-            rbCutMode.IsChecked = !IsCopyMode();
+                // 填充 Profile 下拉框
+                UpdateSourceProfileDropdowns();
 
-            chkTimeRule.IsChecked = _config.EnableTimeRule;
-            txtTimeInterval.Text = _config.TimeIntervalSeconds.ToString();
+                // 选中当前绑定的 Profile
+                SelectProfileInCombo(cmbSource1Profile, _config.SourcePath1Profile);
+                SelectProfileInCombo(cmbSource2Profile, _config.SourcePath2Profile);
 
-            chkSizeRule.IsChecked = _config.EnableSizeRule;
-            txtSizeLimit.Text = _config.SizeLimitMB.ToString();
+                // TransferMode 映射
+                if (_config.TransferMode == "Append") rbAppendMode.IsChecked = true;
+                else if (_config.TransferMode == "Copy") rbCopyMode.IsChecked = true;
+                else rbCutMode.IsChecked = true;
 
-            chkCountRule.IsChecked = _config.EnableCountRule;
-            txtCountLimit.Text = _config.CountLimit.ToString();
+                chkTimeRule.IsChecked = _config.EnableTimeRule;
+                txtTimeInterval.Text = _config.TimeIntervalSeconds.ToString();
 
-            chkEmptyFolderRule.IsChecked = _config.EnableEmptyFolderRule;
-            txtEmptyFolderHours.Text = _config.EmptyFolderHours.ToString();
+                chkSizeRule.IsChecked = _config.EnableSizeRule;
+                txtSizeLimit.Text = _config.SizeLimitMB.ToString();
+
+                chkCountRule.IsChecked = _config.EnableCountRule;
+                txtCountLimit.Text = _config.CountLimit.ToString();
+
+                chkEmptyFolderRule.IsChecked = _config.EnableEmptyFolderRule;
+                txtEmptyFolderHours.Text = _config.EmptyFolderHours.ToString();
+
+                // 账号列表
+                lstAccounts.ItemsSource = _config.SftpProfiles;
+
+                // 根据登录状态更新 UI
+                ApplyRoleRestrictions();
+                UpdateTransferStatusBar();
+                UpdateLoginButton();
+            }
+            finally
+            {
+                _isLoadingConfig = false;
+            }
+        }
+
+        private void UpdateSourceProfileDropdowns()
+        {
+            cmbSource1Profile.ItemsSource = null;
+            cmbSource1Profile.ItemsSource = _config.SftpProfiles;
+
+            cmbSource2Profile.ItemsSource = null;
+            cmbSource2Profile.ItemsSource = _config.SftpProfiles;
+        }
+
+        private void SelectProfileInCombo(ComboBox combo, string profileName)
+        {
+            if (string.IsNullOrEmpty(profileName)) return;
+            foreach (var item in combo.Items)
+            {
+                if (item is SftpProfile p && p.Name == profileName)
+                {
+                    combo.SelectedItem = item;
+                    return;
+                }
+            }
         }
 
         private void UpdateConfigFromUI()
         {
+            if (_isLoadingConfig) return;
+
             _config.SourcePath = txtSourcePath.Text;
-            _config.DestPath = txtDestPath.Text;
             _config.SourcePath2 = txtSourcePath2.Text;
-            _config.DestPath2 = txtDestPath2.Text;
-            _config.TransferMode = rbCopyMode.IsChecked == true ? "Copy" : "Cut";
+
+            // 保存 Profile 选择
+            _config.SourcePath1Profile = (cmbSource1Profile.SelectedItem as SftpProfile)?.Name ?? "";
+            _config.SourcePath2Profile = (cmbSource2Profile.SelectedItem as SftpProfile)?.Name ?? "";
+
+            _config.TransferMode = rbAppendMode.IsChecked == true ? "Append"
+                : rbCopyMode.IsChecked == true ? "Copy" : "Cut";
 
             _config.EnableTimeRule = chkTimeRule.IsChecked ?? false;
             int.TryParse(txtTimeInterval.Text, out int timeInterval);
@@ -1751,5 +2048,4 @@ del ""%~f0"" & exit
 
         #endregion
     }
-
 }

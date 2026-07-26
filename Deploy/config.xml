@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
-<AppConfig>
+<Config>
+    <!-- 源文件夹 — 每个监控目录可以绑定不同的 SFTP 账号 -->
     <SourcePath></SourcePath>
-    <DestPath></DestPath>
+    <SourcePath1Profile></SourcePath1Profile>
     <SourcePath2></SourcePath2>
-    <DestPath2></DestPath2>
-    <TransferMode>Cut</TransferMode>
+    <SourcePath2Profile></SourcePath2Profile>
+
+    <TransferMode>Append</TransferMode>
     <EnableTimeRule>true</EnableTimeRule>
     <TimeIntervalSeconds>60</TimeIntervalSeconds>
     <EnableSizeRule>false</EnableSizeRule>
@@ -13,13 +15,34 @@
     <CountLimit>1000</CountLimit>
     <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
     <EmptyFolderHours>24</EmptyFolderHours>
-    <CloudPath>\\172.16.22.138\Shared data\poco运维工具测试</CloudPath>
-    <CloudUser>IM01</CloudUser>
-    <CloudPassword>Poco@xg2024</CloudPassword>
+
+    <!-- SFTP 账号列表。密码在首次保存时会自动通过 DPAPI 加密为 "DPAPI:..." 格式 -->
+    <SftpProfiles>
+        <Profile>
+            <Name>设备上传</Name>
+            <Role>upload</Role>
+            <Host>172.16.22.138</Host>
+            <Port>22</Port>
+            <Username>device_upload</Username>
+            <Password>device2024</Password>
+            <RemoteRoot>/aoi</RemoteRoot>
+        </Profile>
+        <Profile>
+            <Name>管理员</Name>
+            <Role>admin</Role>
+            <Host>172.16.22.138</Host>
+            <Port>22</Port>
+            <Username>sfp_admin</Username>
+            <Password>admin2024</Password>
+            <RemoteRoot>/</RemoteRoot>
+        </Profile>
+    </SftpProfiles>
+
     <CheckIntervalMinutes>30</CheckIntervalMinutes>
     <AutoUpdate>false</AutoUpdate>
     <AutoStart>false</AutoStart>
     <LastCheckTime></LastCheckTime>
+
     <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
     <WatchProcesses />
-</AppConfig>
+</Config>
