@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
@@ -8,7 +7,6 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows;
 using System.Xml;
-using Renci.SshNet;
 
 namespace Launcher
 {
@@ -17,11 +15,7 @@ namespace Launcher
         private string _appRoot;
         private string _configPath;
         private string _statusPath;
-        private string _sftpHost;
-        private int _sftpPort;
-        private string _sftpUser;
-        private string _sftpPassword;
-        private string _sftpRemoteRoot;
+        private string _updateServerPath;
 
         public MainWindow()
         {
@@ -33,27 +27,24 @@ namespace Launcher
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
         {
-            await Task.Run(() => StartupFlow());
-        }
-
-        private void StartupFlow()
-        {
             try
             {
-                // 1. 读 update.status — 崩溃恢复
-                Dispatcher.InvokeAsync(() => txtStatus.Text = "正在检查更新状态...");
+                // 1. 轻量操作（同步，无网络）
+                txtStatus.Text = "正在检查...";
                 string status = ReadUpdateStatus();
+                LoadConfig();
 
+                // 2. 清理残留状态
                 if (status == "installing")
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "正在恢复上次更新...");
+                    txtStatus.Text = "正在恢复上次更新...";
                     if (!VerifyCurrentVersion())
                         RecoverFromBackup();
                     WriteUpdateStatus("idle");
                 }
                 else if (status == "ready")
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "有待安装的更新，正在安装...");
+                    txtStatus.Text = "有待安装的更新，正在安装...";
                     InstallUpdate();
                     return;
                 }
@@ -64,29 +55,38 @@ namespace Launcher
                     WriteUpdateStatus("idle");
                 }
 
-                // 2. 读 config.xml — 获取 SFTP 连接信息
-                Dispatcher.InvokeAsync(() => txtStatus.Text = "正在读取配置...");
-                LoadConfig();
-
-                // 3. 通过 SFTP 检查更新
-                if (!string.IsNullOrWhiteSpace(_sftpHost) && !string.IsNullOrWhiteSpace(_sftpUser))
+                // 3. 本地版本就绪 → 直接启动，跳过 SMB
+                if (!string.IsNullOrWhiteSpace(_updateServerPath) && VerifyCurrentVersion())
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "正在连接云端检查版本更新...");
-                    CheckForUpdateSftp();
+                    txtStatus.Text = "本地版本就绪，直接启动...";
+                    StartMainApp();
+                    return;
+                }
+
+                // 4. SMB 检查更新（6 秒超时）
+                if (!string.IsNullOrWhiteSpace(_updateServerPath))
+                {
+                    txtStatus.Text = "正在检查版本更新...";
+                    var checkTask = Task.Run(() => CheckForUpdate());
+                    if (await Task.WhenAny(checkTask, Task.Delay(6000)) == checkTask)
+                        return; // CheckForUpdate 内部已处理（调用 StartMainApp 或显示更新面板）
+
+                    txtStatus.Text = "更新服务器不可达（网络超时），直接启动...";
                 }
                 else
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "未配置 SFTP 连接，直接启动...");
-                    StartMainApp();
+                    txtStatus.Text = "未配置更新服务器，直接启动...";
                 }
+                StartMainApp();
             }
             catch (Exception ex)
             {
-                Dispatcher.InvokeAsync(() =>
-                    txtStatus.Text = $"启动失败: {ex.Message}\n尝试直接启动主程序...");
+                txtStatus.Text = $"启动失败: {ex.Message}\n尝试直接启动主程序...";
                 StartMainApp();
             }
         }
+
+        // ==================== 更新状态文件 ====================
 
         private string ReadUpdateStatus()
         {
@@ -101,12 +101,10 @@ namespace Launcher
 
         private void WriteUpdateStatus(string status)
         {
-            try
-            {
-                File.WriteAllText(_statusPath, status);
-            }
-            catch { }
+            try { File.WriteAllText(_statusPath, status); } catch { }
         }
+
+        // ==================== 配置 ====================
 
         private void LoadConfig()
         {
@@ -116,111 +114,72 @@ namespace Launcher
             {
                 var doc = new XmlDocument();
                 doc.Load(_configPath);
+                var node = doc.SelectSingleNode("//UpdateServerPath");
+                _updateServerPath = node?.InnerText?.Trim() ?? "";
 
-                // 优先读取 SftpProfiles 中的第一个 admin 账号
-                var profileNodes = doc.SelectNodes("//SftpProfiles/Profile");
-                if (profileNodes != null && profileNodes.Count > 0)
+                // 也支持旧版 CloudPath（向后兼容）
+                if (string.IsNullOrEmpty(_updateServerPath))
                 {
-                    // 优先选择 admin 角色
-                    XmlNode selectedNode = null;
-                    foreach (XmlNode node in profileNodes)
-                    {
-                        string role = node.SelectSingleNode("Role")?.InnerText?.Trim() ?? "";
-                        if (role == "admin")
-                        {
-                            selectedNode = node;
-                            break;
-                        }
-                    }
-                    // 没有 admin，用第一个
-                    if (selectedNode == null)
-                        selectedNode = profileNodes[0];
-
-                    _sftpHost = selectedNode.SelectSingleNode("Host")?.InnerText?.Trim() ?? "";
-                    _sftpPort = int.TryParse(selectedNode.SelectSingleNode("Port")?.InnerText?.Trim(), out int port) ? port : 22;
-                    _sftpUser = selectedNode.SelectSingleNode("Username")?.InnerText?.Trim() ?? "";
-                    _sftpPassword = selectedNode.SelectSingleNode("Password")?.InnerText?.Trim() ?? "";
-                    _sftpRemoteRoot = selectedNode.SelectSingleNode("RemoteRoot")?.InnerText?.Trim() ?? "/";
-                }
-                else
-                {
-                    // 回退: 旧版 CloudPath 格式
-                    string cloudPath = doc.SelectSingleNode("//CloudPath")?.InnerText ?? "";
-                    _sftpHost = cloudPath;
-                    _sftpUser = doc.SelectSingleNode("//CloudUser")?.InnerText ?? "";
-                    _sftpPassword = doc.SelectSingleNode("//CloudPassword")?.InnerText ?? "";
+                    var cloudNode = doc.SelectSingleNode("//CloudPath");
+                    _updateServerPath = cloudNode?.InnerText?.Trim() ?? "";
                 }
             }
             catch { }
         }
 
-        private void CheckForUpdateSftp()
+        // ==================== 版本检查 ====================
+
+        private void CheckForUpdate()
         {
             try
             {
-                using (var sftp = new SftpClient(_sftpHost, _sftpPort, _sftpUser, _sftpPassword))
+                string versionFile = Path.Combine(_updateServerPath, "version.json");
+                if (!File.Exists(versionFile))
                 {
-                    sftp.Connect();
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = "未找到云端版本信息，直接启动...");
+                    StartMainApp();
+                    return;
+                }
 
-                    string jsonPath = _sftpRemoteRoot.TrimEnd('/') + "/versions/version.json";
-                    if (!sftp.Exists(jsonPath))
+                string json = File.ReadAllText(versionFile);
+                var jss = new JavaScriptSerializer();
+                var data = jss.Deserialize<dynamic>(json);
+                string latestVersion = data["latest"]?.ToString() ?? "";
+
+                var versions = data["versions"] as System.Collections.Generic.Dictionary<string, object>;
+                string cloudDate = "";
+                string cloudNote = "";
+                if (versions != null && versions.ContainsKey(latestVersion))
+                {
+                    var verInfo = versions[latestVersion] as System.Collections.Generic.Dictionary<string, object>;
+                    if (verInfo != null)
                     {
-                        Dispatcher.InvokeAsync(() => txtStatus.Text = "未找到云端版本信息，直接启动...");
-                        StartMainApp();
-                        return;
+                        cloudDate = verInfo.ContainsKey("date") ? verInfo["date"]?.ToString() ?? "" : "";
+                        cloudNote = verInfo.ContainsKey("note") ? verInfo["note"]?.ToString() ?? "" : "";
                     }
+                }
 
-                    string json;
-                    using (var ms = new MemoryStream())
+                string localVer = GetLocalLatestVersion();
+
+                if (string.IsNullOrWhiteSpace(latestVersion))
+                {
+                    StartMainApp();
+                    return;
+                }
+
+                if (IsNewerVersion(latestVersion, localVer))
+                {
+                    Dispatcher.InvokeAsync(() =>
                     {
-                        sftp.DownloadFile(jsonPath, ms);
-                        ms.Position = 0;
-                        using (var reader = new StreamReader(ms, System.Text.Encoding.UTF8))
-                        {
-                            json = reader.ReadToEnd();
-                        }
-                    }
-
-                    var jss = new JavaScriptSerializer();
-                    var data = jss.Deserialize<dynamic>(json);
-                    string latestVersion = data["latest"]?.ToString() ?? "";
-
-                    var versions = data["versions"] as Dictionary<string, object>;
-                    string cloudDate = "";
-                    string cloudNote = "";
-                    if (versions != null && versions.ContainsKey(latestVersion))
-                    {
-                        var verInfo = versions[latestVersion] as Dictionary<string, object>;
-                        if (verInfo != null)
-                        {
-                            cloudDate = verInfo.ContainsKey("date") ? verInfo["date"]?.ToString() ?? "" : "";
-                            cloudNote = verInfo.ContainsKey("note") ? verInfo["note"]?.ToString() ?? "" : "";
-                        }
-                    }
-
-                    string localVer = GetLocalLatestVersion();
-                    if (string.IsNullOrWhiteSpace(latestVersion))
-                    {
-                        StartMainApp();
-                        return;
-                    }
-
-                    if (IsNewerVersion(latestVersion, localVer))
-                    {
-                        Dispatcher.InvokeAsync(() =>
-                        {
-                            txtStatus.Text = $"发现新版本 {latestVersion}";
-                            txtUpdateInfo.Text = $"版本: {latestVersion}\n日期: {cloudDate}\n\n{cloudNote}\n\n当前本地版本: {localVer}";
-                            panelUpdate.Visibility = Visibility.Visible;
-                        });
-                    }
-                    else
-                    {
-                        Dispatcher.InvokeAsync(() => txtStatus.Text = $"已是最新版本 ({localVer})，正在启动...");
-                        StartMainApp();
-                    }
-
-                    sftp.Disconnect();
+                        txtStatus.Text = $"发现新版本 {latestVersion}";
+                        txtUpdateInfo.Text = $"版本: {latestVersion}\n日期: {cloudDate}\n\n{cloudNote}\n\n当前本地版本: {localVer}";
+                        panelUpdate.Visibility = Visibility.Visible;
+                    });
+                }
+                else
+                {
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = $"已是最新版本 ({localVer})，正在启动...");
+                    StartMainApp();
                 }
             }
             catch
@@ -229,6 +188,8 @@ namespace Launcher
                 StartMainApp();
             }
         }
+
+        // ==================== 版本号 ====================
 
         private string GetLocalLatestVersion()
         {
@@ -260,6 +221,8 @@ namespace Launcher
             }
         }
 
+        // ==================== 下载和安装 ====================
+
         private async void BtnUpdate_Click(object sender, RoutedEventArgs e)
         {
             panelUpdate.Visibility = Visibility.Collapsed;
@@ -278,11 +241,30 @@ namespace Launcher
         {
             try
             {
+                string latestVersion = "";
+
+                // 获取最新版本号
+                string versionFile = Path.Combine(_updateServerPath, "version.json");
+                if (File.Exists(versionFile))
+                {
+                    string json = File.ReadAllText(versionFile);
+                    var jss = new JavaScriptSerializer();
+                    var data = jss.Deserialize<dynamic>(json);
+                    latestVersion = data["latest"]?.ToString() ?? "";
+                }
+
+                if (string.IsNullOrEmpty(latestVersion))
+                {
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = "未找到最新版本号");
+                    return;
+                }
+
                 Dispatcher.InvokeAsync(() =>
                 {
                     txtStatus.Text = "正在下载更新...";
                     progressBar.Visibility = Visibility.Visible;
                     progressBar.IsIndeterminate = true;
+                    txtProgress.Text = $"正在下载 v{latestVersion} 更新文件...";
                 });
 
                 WriteUpdateStatus("downloading");
@@ -291,38 +273,21 @@ namespace Launcher
                 if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
                 Directory.CreateDirectory(tempDir);
 
-                using (var sftp = new SftpClient(_sftpHost, _sftpPort, _sftpUser, _sftpPassword))
+                string remoteVerDir = Path.Combine(_updateServerPath, latestVersion);
+                if (!Directory.Exists(remoteVerDir) ||
+                    !File.Exists(Path.Combine(remoteVerDir, "MoveImageForm.exe")))
                 {
-                    sftp.Connect();
-
-                    string jsonPath = _sftpRemoteRoot.TrimEnd('/') + "/versions/version.json";
-                    string json;
-                    using (var ms = new MemoryStream())
-                    {
-                        sftp.DownloadFile(jsonPath, ms);
-                        ms.Position = 0;
-                        using (var reader = new StreamReader(ms, System.Text.Encoding.UTF8))
-                        {
-                            json = reader.ReadToEnd();
-                        }
-                    }
-
-                    var jss = new JavaScriptSerializer();
-                    var data = jss.Deserialize<dynamic>(json);
-                    string latestVersion = data["latest"]?.ToString() ?? "";
-
-                    Dispatcher.InvokeAsync(() => txtProgress.Text = "正在通过 SFTP 下载更新文件...");
-
-                    // Download version directory from SFTP
-                    string remoteVerDir = _sftpRemoteRoot.TrimEnd('/') + "/versions/" + latestVersion;
-                    DownloadDirectoryFromSftp(sftp, remoteVerDir, tempDir);
-
-                    sftp.Disconnect();
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = "更新下载失败: 云端版本文件不完整");
+                    WriteUpdateStatus("idle");
+                    return;
                 }
+
+                // SMB 复制
+                CopyDirectory(remoteVerDir, tempDir);
 
                 if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "更新下载失败: 版本文件不完整");
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = "更新下载失败: 下载后文件不完整");
                     WriteUpdateStatus("idle");
                     return;
                 }
@@ -345,65 +310,29 @@ namespace Launcher
             }
         }
 
-        private void DownloadDirectoryFromSftp(SftpClient sftp, string remoteDir, string localDir)
-        {
-            var items = sftp.ListDirectory(remoteDir);
-            foreach (var item in items)
-            {
-                if (item.Name == "." || item.Name == "..") continue;
-
-                string remotePath = remoteDir + "/" + item.Name;
-                string localPath = Path.Combine(localDir, item.Name);
-
-                if (item.IsDirectory)
-                {
-                    Directory.CreateDirectory(localPath);
-                    DownloadDirectoryFromSftp(sftp, remotePath, localPath);
-                }
-                else
-                {
-                    using (var fileStream = File.Create(localPath))
-                    {
-                        sftp.DownloadFile(remotePath, fileStream);
-                    }
-                }
-            }
-        }
-
         private void InstallUpdate()
         {
             try
             {
                 WriteUpdateStatus("installing");
 
+                // 获取版本号
                 string latestVersion = "";
-                using (var sftp = new SftpClient(_sftpHost, _sftpPort, _sftpUser, _sftpPassword))
+                string versionFile = Path.Combine(_updateServerPath, "version.json");
+                if (File.Exists(versionFile))
                 {
-                    sftp.Connect();
-                    string jsonPath = _sftpRemoteRoot.TrimEnd('/') + "/versions/version.json";
-                    using (var ms = new MemoryStream())
-                    {
-                        sftp.DownloadFile(jsonPath, ms);
-                        ms.Position = 0;
-                        using (var reader = new StreamReader(ms, System.Text.Encoding.UTF8))
-                        {
-                            string json = reader.ReadToEnd();
-                            var jss = new JavaScriptSerializer();
-                            var data = jss.Deserialize<dynamic>(json);
-                            latestVersion = data["latest"]?.ToString() ?? "";
-                        }
-                    }
-                    sftp.Disconnect();
+                    string json = File.ReadAllText(versionFile);
+                    var jss = new JavaScriptSerializer();
+                    var data = jss.Deserialize<dynamic>(json);
+                    latestVersion = data["latest"]?.ToString() ?? "";
                 }
 
                 string batPath = Path.Combine(_appRoot, "update.bat");
                 string batContent = GenerateUpdateBat(latestVersion);
-                File.WriteAllText(batPath, batContent, System.Text.Encoding.UTF8);
+                // 使用系统默认编码（中文 Windows 为 GBK），避免 cmd.exe 解析中文路径乱码
+                File.WriteAllText(batPath, batContent, System.Text.Encoding.Default);
 
-                Dispatcher.InvokeAsync(() =>
-                {
-                    txtStatus.Text = "即将重启完成更新...";
-                });
+                Dispatcher.InvokeAsync(() => txtStatus.Text = "即将重启完成更新...");
 
                 Task.Delay(500).ContinueWith(_ =>
                 {
@@ -436,7 +365,10 @@ namespace Launcher
 
             return $@"@echo off
 chcp 65001 >nul
-echo 正在更新 poco运维工具 到版本 {version}...
+echo 正在更新 VP运维工具 到版本 {version}...
+echo.
+echo 请勿关闭此窗口，更新完成后将自动启动程序...
+echo.
 
 timeout /t 2 /nobreak >nul
 
@@ -463,11 +395,12 @@ del ""%~f0"" & exit
 ";
         }
 
+        // ==================== 崩溃恢复 ====================
+
         private bool VerifyCurrentVersion()
         {
             string localVer = GetLocalLatestVersion();
-            string versionsDir = Path.Combine(_appRoot, "versions");
-            string verDir = Path.Combine(versionsDir, localVer);
+            string verDir = Path.Combine(_appRoot, "versions", localVer);
             return File.Exists(Path.Combine(verDir, "MoveImageForm.exe"));
         }
 
@@ -497,12 +430,11 @@ del ""%~f0"" & exit
                 if (Directory.Exists(restoreDir)) Directory.Delete(restoreDir, true);
                 CopyDirectory(bestDir, restoreDir);
 
-                Dispatcher.InvokeAsync(() =>
-                    txtStatus.Text = "已从备份恢复，正在启动...");
+                Dispatcher.InvokeAsync(() => txtStatus.Text = "已从备份恢复，正在启动...");
             }
         }
 
-        private void CopyDirectory(string sourceDir, string destDir)
+        private static void CopyDirectory(string sourceDir, string destDir)
         {
             if (!Directory.Exists(destDir))
                 Directory.CreateDirectory(destDir);
@@ -520,11 +452,31 @@ del ""%~f0"" & exit
             }
         }
 
+        // ==================== 启动主程序 ====================
+
         private void StartMainApp()
         {
             string localVer = GetLocalLatestVersion();
-            string versionsDir = Path.Combine(_appRoot, "versions");
-            string exePath = Path.Combine(versionsDir, localVer, "MoveImageForm.exe");
+            string exePath = Path.Combine(_appRoot, "versions", localVer, "MoveImageForm.exe");
+
+            // 写诊断日志
+            try
+            {
+                string logPath = Path.Combine(_appRoot, "launcher_debug.log");
+                string[] dirs = Directory.Exists(Path.Combine(_appRoot, "versions"))
+                    ? Directory.GetDirectories(Path.Combine(_appRoot, "versions"))
+                    : new string[0];
+                File.WriteAllText(logPath,
+                    $"_appRoot = [{_appRoot}]\r\n" +
+                    $"localVer = [{localVer}]\r\n" +
+                    $"exePath = [{exePath}]\r\n" +
+                    $"File.Exists(exePath) = {File.Exists(exePath)}\r\n" +
+                    $"versions dirs = [{string.Join(", ", Array.ConvertAll(dirs, d => Path.GetFileName(d)))}]\r\n" +
+                    $"exePath bytes = [{string.Join(" ", System.Text.Encoding.UTF8.GetBytes(exePath).Select(b => b.ToString("X2")))}\r\n" +
+                    $"time = {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n",
+                    new System.Text.UTF8Encoding(false));
+            }
+            catch { /* 诊断日志失败不影响主流程 */ }
 
             if (!File.Exists(exePath))
             {
@@ -532,13 +484,12 @@ del ""%~f0"" & exit
                 if (!File.Exists(exePath))
                 {
                     Dispatcher.InvokeAsync(() =>
-                        txtStatus.Text = $"错误: 找不到主程序文件。\n搜索路径: {exePath}");
+                        txtStatus.Text = $"错误: 找不到主程序文件。\n_appRoot: {_appRoot}\nlocalVer: {localVer}\n搜索路径: {exePath}");
                     return;
                 }
             }
 
-            Dispatcher.InvokeAsync(() =>
-                txtStatus.Text = "正在启动主程序...");
+            Dispatcher.InvokeAsync(() => txtStatus.Text = "正在启动主程序...");
 
             Process.Start(new ProcessStartInfo(exePath)
             {

@@ -38,6 +38,8 @@
         </Profile>
     </SftpProfiles>
 
+    <!-- ★ SMB 云端更新路径，格式 \\服务器IP\共享文件夹名 -->
+    <UpdateServerPath></UpdateServerPath>
     <CheckIntervalMinutes>30</CheckIntervalMinutes>
     <AutoUpdate>false</AutoUpdate>
     <AutoStart>false</AutoStart>

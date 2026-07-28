@@ -29,22 +29,23 @@ namespace MoveImageForm.Services
             return (role ?? "").ToLower() == RoleReadonly;
         }
 
-        /// <summary>获取强制传输模式（upload→Append, readonly→None, admin→自由选择）</summary>
+        /// <summary>获取强制传输模式（readonly→None, upload/admin→自由选择）</summary>
         public static string ForcedTransferMode(string role)
         {
             role = (role ?? "").ToLower();
             switch (role)
             {
-                case RoleUpload: return "Append";
+                case RoleUpload: return "";
                 case RoleAdmin: return ""; // 空字符串表示不强制，用户自由选择
                 default: return "None";   // 未登录或只读 → 不可传输
             }
         }
 
-        /// <summary>是否允许选择传输模式（只有 admin 可以）</summary>
+        /// <summary>是否允许选择传输模式（upload 和 admin 都可以）</summary>
         public static bool CanChooseTransferMode(string role)
         {
-            return IsAdmin(role);
+            role = (role ?? "").ToLower();
+            return role == RoleUpload || role == RoleAdmin;
         }
 
         /// <summary>是否可以访问账号管理</summary>

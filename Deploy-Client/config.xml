@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SourcePath>D:\Camera\Images</SourcePath>
+  <SourcePath2 />
+  <SourcePath1Profile>设备上传</SourcePath1Profile>
+  <SourcePath2Profile />
+  <TransferMode>Append</TransferMode>
+  <EnableTimeRule>true</EnableTimeRule>
+  <TimeIntervalSeconds>60</TimeIntervalSeconds>
+  <EnableSizeRule>false</EnableSizeRule>
+  <SizeLimitMB>100</SizeLimitMB>
+  <EnableCountRule>false</EnableCountRule>
+  <CountLimit>1000</CountLimit>
+  <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
+  <EmptyFolderHours>24</EmptyFolderHours>
+  <SftpProfiles>
+    <Profile>
+      <Name>设备上传</Name>
+      <Role>upload</Role>
+      <TransportType>SFTP</TransportType>
+      <Host>172.16.22.138</Host>
+      <Port>22</Port>
+      <Username>device_upload</Username>
+      <Password>DPAPI:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAYH1hBvULOkCQP0NH9XD50AAAAAACAAAAAAAQZgAAAAEAACAAAAA9igklOdpk1hKlMm/6AXipRN6dBjGuCNOP0cIx9rNJNgAAAAAOgAAAAAIAACAAAAD2TJXBnf0ZT76hyzPhsFcbejIlaSXpGNqFNhHmEw1SWBAAAABBuJOkAuUh4DsoCZiunmSyQAAAAAou3ZHDFc8BP9nm2d2pPC1/VwhIXBj5KURGOzBg9+4bCgqQ+xX/4q8KGhJ4x8IGBZYUBdRIshyEfm03oXBh9xA=</Password>
+      <RemoteRoot>/aoi</RemoteRoot>
+    </Profile>
+    <Profile>
+      <Name>管理员</Name>
+      <Role>admin</Role>
+      <TransportType>SFTP</TransportType>
+      <Host>172.16.22.138</Host>
+      <Port>22</Port>
+      <Username>sfp_admin</Username>
+      <Password>DPAPI:AQAAANCMnd8BFdERjHoAwE/Cl+sBAAAAYH1hBvULOkCQP0NH9XD50AAAAAACAAAAAAAQZgAAAAEAACAAAABsJR5y3DZvy8fC1lV8ZlY+xqmcrpSKeO0PA3BVi/TEXwAAAAAOgAAAAAIAACAAAADvIvcVbwedirUEe4feQAOsXLemzeBAkgEzMCGWqGPZSxAAAADr03XcmqqWy6d1ZT2CpNi0QAAAAHGZQNsD82k2Z8jp4r/ZXW2EdKwJuVnHuRTbDFDyqd+MJEEJkPH7HydDUSlJntObHIWy5dXkSA+NWRRHElBI/Rg=</Password>
+      <RemoteRoot>/</RemoteRoot>
+    </Profile>
+  </SftpProfiles>
+  <UpdateServerPath>\\192.168.1.100\AppUpdate</UpdateServerPath>
+  <CheckIntervalMinutes>30</CheckIntervalMinutes>
+  <AutoUpdate>false</AutoUpdate>
+  <AutoStart>false</AutoStart>
+  <LastCheckTime>2026-07-28 16:06:01</LastCheckTime>
+  <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
+  <WatchProcesses />
+</Config>

@@ -77,6 +77,9 @@ namespace MoveImageForm
         }
 
         // ===== 版本更新 =====
+        /// <summary>SMB 共享路径，如 \\192.168.1.100\AppUpdate</summary>
+        [XmlElement]
+        public string UpdateServerPath { get; set; } = "";
         [XmlElement]
         public int CheckIntervalMinutes { get; set; } = 30;
         [XmlElement]

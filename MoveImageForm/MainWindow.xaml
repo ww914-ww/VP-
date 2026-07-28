@@ -30,15 +30,14 @@
         <TabControl x:Name="tabMain" Margin="5" Grid.Row="1" SelectionChanged="TabMain_SelectionChanged">
             <!-- ===== Tab 1: 文件搬运 ===== -->
             <TabItem Header="文件搬运">
-                <ScrollViewer VerticalScrollBarVisibility="Auto">
-                    <Grid Margin="5">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="Auto"/>
-                            <RowDefinition Height="*"/>
-                        </Grid.RowDefinitions>
+                <Grid Margin="5">
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
 
                         <!-- 登录状态条 -->
                         <Border x:Name="borderTransferStatus" Grid.Row="0" Background="#E8F4E8"
@@ -139,8 +138,7 @@
                         <GroupBox Header="运行日志" Grid.Row="4">
                             <ListBox x:Name="lstLog" Margin="5"/>
                         </GroupBox>
-                    </Grid>
-                </ScrollViewer>
+                </Grid>
             </TabItem>
 
             <!-- ===== Tab 2: 进程监听 ===== -->
@@ -310,23 +308,24 @@
                                                 <TextBlock FontWeight="Bold" FontSize="14">
                                                     <Run Text="{Binding Name}"/>
                                                 </TextBlock>
-                                                <TextBlock Foreground="#888" Margin="8,0,0,0" FontSize="11"
+                                                <TextBlock Foreground="#0078d4" Margin="8,0,0,0" FontSize="11"
+                                                           VerticalAlignment="Center" FontWeight="Bold">
+                                                    [<Run Text="{Binding TransportType}"/>]
+                                                </TextBlock>
+                                                <TextBlock Foreground="#888" Margin="4,0,0,0" FontSize="11"
                                                            VerticalAlignment="Center">
                                                     [<Run Text="{Binding Role}"/>]
                                                 </TextBlock>
-                                                <TextBlock Foreground="{Binding IsPasswordEncrypted, Converter={x:Null}}"
-                                                           FontSize="10" Margin="8,0,0,0" VerticalAlignment="Center"
-                                                           Text="🔒 已加密" ToolTip="密码已通过 DPAPI 加密存储"/>
+                                                <TextBlock x:Name="lockIndicator" FontSize="10" Margin="8,0,0,0"
+                                                           VerticalAlignment="Center" Text="🔒 已加密"
+                                                           ToolTip="密码已通过 DPAPI 加密存储"
+                                                           Foreground="#888"/>
                                             </StackPanel>
-                                            <TextBlock FontSize="11" Foreground="#666" Margin="0,4,0,0">
-                                                账号: <Run Text="{Binding Username}"/>@<Run Text="{Binding Host}"/>:<Run Text="{Binding Port}"/>
-                                            </TextBlock>
-                                            <TextBlock FontSize="11" Foreground="#666">
-                                                远程路径: <Run Text="{Binding RemoteRoot}"/>
-                                            </TextBlock>
+                                            <TextBlock FontSize="11" Foreground="#666" Margin="0,4,0,0"
+                                                       Text="{Binding ConnectionSummary}"/>
                                         </StackPanel>
-                                        <Button Grid.Column="1" Content="修改密码" Width="70" Height="26"
-                                                Click="BtnChangePassword_Click" Tag="{Binding}" VerticalAlignment="Center"/>
+                                        <Button Grid.Column="1" Content="编辑账号" Width="70" Height="26"
+                                                Click="BtnEditAccount_Click" Tag="{Binding}" VerticalAlignment="Center"/>
                                     </Grid>
                                 </Border>
                             </DataTemplate>

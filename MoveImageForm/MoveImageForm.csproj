@@ -89,10 +89,13 @@
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="ProcessViewModel.cs" />
+    <Compile Include="Models\RemoteFileInfo.cs" />
     <Compile Include="Models\SftpProfile.cs" />
     <Compile Include="Services\DpapiHelper.cs" />
-    <Compile Include="Services\ISftpService.cs" />
+    <Compile Include="Services\IFileTransferService.cs" />
+    <Compile Include="Services\S3Service.cs" />
     <Compile Include="Services\SftpService.cs" />
+    <Compile Include="Services\SmbService.cs" />
     <Compile Include="Services\SessionManager.cs" />
     <Compile Include="Services\RoleEnforcer.cs" />
     <Compile Include="Views\LoginDialog.xaml.cs">

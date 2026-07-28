@@ -12,6 +12,21 @@ namespace MoveImageForm.Models
         [XmlElement]
         public string Role { get; set; } = "upload";  // "upload" | "admin" | "readonly"
 
+        /// <summary>传输协议类型："SFTP"（默认，兼容旧配置）或 "S3"</summary>
+        [XmlElement]
+        public string TransportType { get; set; } = "SFTP";
+
+        /// <summary>是否为 S3 传输模式</summary>
+        [XmlIgnore]
+        public bool IsS3 => (TransportType ?? "").ToUpper() == "S3";
+
+        /// <summary>是否为 SMB 传输模式（内置系统账号）</summary>
+        [XmlIgnore]
+        public bool IsSmb => (TransportType ?? "").ToUpper() == "SMB";
+
+        /// <summary>系统内置 SMB 账号名</summary>
+        public const string SmbProfileName = "SMB传输";
+
         [XmlElement]
         public string Host { get; set; } = "";
 
@@ -47,9 +62,18 @@ namespace MoveImageForm.Models
         [XmlIgnore]
         public bool IsPasswordEncrypted => DpapiHelper.IsEncrypted(Password);
 
+        /// <summary>账号列表显示用的连接信息</summary>
+        [XmlIgnore]
+        public string ConnectionSummary => IsSmb
+            ? $"目标: {RemoteRoot}"
+            : $"{Username}@{Host}:{Port}";
+
         public override string ToString()
         {
-            return $"{Name} ({Role}) - {Username}@{Host}:{Port}";
+            if (IsSmb)
+                return $"{Name} (SMB/本地) → {RemoteRoot}";
+            string type = IsS3 ? "S3" : "SFTP";
+            return $"{Name} ({Role}/{type}) - {Username}@{Host}:{Port}";
         }
     }
 }

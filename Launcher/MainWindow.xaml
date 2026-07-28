@@ -1,7 +1,7 @@
 <Window x:Class="Launcher.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="poco运维工具 - 启动中" Height="350" Width="450"
+        Title="VP运维工具 - 启动中" Height="350" Width="450"
         Icon="pack://application:,,,/Resources/AppLogo.ico"
         WindowStartupLocation="CenterScreen" Loaded="Window_Loaded">
     <Grid Margin="20">
@@ -13,7 +13,7 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" FontSize="18" FontWeight="Bold" Text="poco运维工具" HorizontalAlignment="Center" Margin="0,0,0,16"/>
+        <TextBlock Grid.Row="0" FontSize="18" FontWeight="Bold" Text="VP运维工具" HorizontalAlignment="Center" Margin="0,0,0,16"/>
 
         <TextBlock x:Name="txtStatus" Grid.Row="1" FontSize="13" HorizontalAlignment="Center" TextWrapping="Wrap" Text="正在检查更新..." Margin="0,0,0,12"/>
 

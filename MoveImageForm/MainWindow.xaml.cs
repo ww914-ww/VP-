@@ -4,6 +4,7 @@ using System.Collections.ObjectModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Text;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -60,7 +61,15 @@ namespace MoveImageForm
         {
             if (_session.IsLoggedIn)
             {
-                ShowLogoutMenu();
+                // 登出时清除保存的密码
+                if (_config != null && _config.SftpProfiles != null)
+                {
+                    foreach (var p in _config.SftpProfiles)
+                        p.Password = "";
+                }
+                SaveConfig();
+                _session.Logout();
+                Log("[系统] 已登出");
                 return;
             }
 
@@ -74,112 +83,68 @@ namespace MoveImageForm
                 return;
             }
 
-            // 尝试用存储的（DPAPI 解密后）密码自动连接
-            int connected = 0;
-            var failedProfiles = new List<SftpProfile>();
-
+            var profiles = new List<SftpProfile>();
             foreach (var name in activeProfileNames)
             {
-                var profile = _config.FindProfile(name);
-                if (profile == null) continue;
-
-                try
-                {
-                    string password = profile.GetPlainPassword();
-                    if (!string.IsNullOrEmpty(password))
-                    {
-                        _session.Login(profile, password);
-                        connected++;
-                        Log($"[系统] 自动连接: {profile.Name} → {profile.RemoteRoot}");
-                        continue;
-                    }
-                }
-                catch { }
-
-                failedProfiles.Add(profile);
+                var p = _config.FindProfile(name);
+                if (p != null) profiles.Add(p);
             }
 
-            // 如果有未连接的 Profile（密码为空或错误），弹出登录框手动输入
-            if (failedProfiles.Count > 0)
+            if (profiles.Count == 0)
             {
-                var dialog = new LoginDialog(failedProfiles);
+                MessageBox.Show("未找到已配置的账号。", "提示", MessageBoxButton.OK, MessageBoxImage.Information);
+                return;
+            }
+
+            // 逐个登录每个活跃账号（SMB 自动连接，无需弹窗输密码）
+            int connected = 0;
+            foreach (var profile in profiles)
+            {
+                if (profile.IsSmb)
+                {
+                    // SMB 无需密码，直接连接
+                    try
+                    {
+                        _session.Login(profile, "");
+                        connected++;
+                        Log($"[系统] SMB 已就绪: {profile.Name} → {profile.RemoteRoot}");
+                    }
+                    catch (Exception ex)
+                    {
+                        Log($"[系统] SMB 连接失败: {ex.Message}");
+                    }
+                    continue;
+                }
+
+                var dialog = new LoginDialog(new List<SftpProfile> { profile });
                 dialog.Owner = this;
+                dialog.Title = $"登录 - {profile.Name} ({profile.TransportType})";
                 if (dialog.ShowDialog() == true)
                 {
                     try
                     {
                         _session.Login(dialog.SelectedProfile, dialog.Password);
                         connected++;
-                        Log($"[系统] 手动连接: {dialog.SelectedProfile.Name} → {dialog.SelectedProfile.RemoteRoot}");
+                        Log($"[系统] 已连接: {dialog.SelectedProfile.Name} → {dialog.SelectedProfile.RemoteRoot}");
 
-                        // 更新 Profile 密码并加密保存
-                        dialog.SelectedProfile.Password = dialog.Password;
-                        dialog.SelectedProfile.EncryptPassword();
-                        SaveConfig();
+                        // 保存密码到配置（DPAPI 加密），下次启动自动登录
+                        var p = _config.FindProfile(dialog.SelectedProfile.Name);
+                        if (p != null)
+                        {
+                            p.Password = dialog.Password;
+                            SaveConfig(); // 内部自动 DPAPI 加密
+                        }
                     }
                     catch (Exception ex)
                     {
-                        MessageBox.Show($"连接失败: {ex.Message}", "登录失败",
+                        MessageBox.Show($"连接 {profile.Name} 失败: {ex.Message}", "登录失败",
                             MessageBoxButton.OK, MessageBoxImage.Error);
                     }
-                }
-
-                // 尝试连接剩余的
-                foreach (var profile in failedProfiles)
-                {
-                    if (_session.IsProfileConnected(profile.Name)) continue;
-                    try
-                    {
-                        string password = profile.GetPlainPassword();
-                        if (!string.IsNullOrEmpty(password))
-                        {
-                            _session.Login(profile, password);
-                            connected++;
-                            Log($"[系统] 自动连接: {profile.Name} → {profile.RemoteRoot}");
-                        }
-                    }
-                    catch { }
                 }
             }
 
             if (connected > 0)
-                Log($"[系统] 已连接 {connected} 个账号。");
-            else
-                Log("[系统] 登录失败，未连接任何账号。");
-
-            UpdateTransferStatusBar();
-        }
-
-        private void ShowLogoutMenu()
-        {
-            var menu = new ContextMenu();
-
-            foreach (var name in _session.ConnectedProfiles)
-            {
-                var item = new MenuItem { Header = $"已连接: {name}" };
-                item.IsEnabled = false;
-                item.FontWeight = FontWeights.Bold;
-                menu.Items.Add(item);
-            }
-            menu.Items.Add(new Separator());
-
-            var logoutItem = new MenuItem { Header = "登出全部" };
-            logoutItem.Click += (s, args) =>
-            {
-                _session.Logout();
-                Log("[系统] 已登出全部账号");
-            };
-            menu.Items.Add(logoutItem);
-
-            var switchItem = new MenuItem { Header = "切换账号..." };
-            switchItem.Click += (s, args) =>
-            {
-                _session.Logout();
-                BtnLogin_Click(null, null);
-            };
-            menu.Items.Add(switchItem);
-
-            menu.IsOpen = true;
+                Log($"[系统] 已连接 {connected}/{profiles.Count} 个账号。");
         }
 
         private void OnLoginStateChanged()
@@ -196,11 +161,7 @@ namespace MoveImageForm
         {
             if (_session.IsLoggedIn)
             {
-                int count = _session.ConnectedProfiles.Count;
-                string label = count == 1
-                    ? _session.ConnectedProfiles.First()
-                    : $"已连接 {count} 个账号";
-                btnLogin.Content = $"{label} ▼";
+                btnLogin.Content = "登出";
                 spLoginStatus.Visibility = Visibility.Visible;
 
                 var parts = new List<string>();
@@ -211,12 +172,20 @@ namespace MoveImageForm
                         parts.Add($"{p.Name}({p.Role})→{p.RemoteRoot}");
                 }
                 txtLoginInfo.Text = string.Join(" | ", parts);
+
+                // 登录后锁定账号选择器，防止传输中途切换账号
+                cmbSource1Profile.IsEnabled = false;
+                cmbSource2Profile.IsEnabled = false;
             }
             else
             {
                 btnLogin.Content = "登录";
                 spLoginStatus.Visibility = Visibility.Collapsed;
                 txtLoginInfo.Text = "";
+
+                // 登出后恢复账号选择器
+                cmbSource1Profile.IsEnabled = true;
+                cmbSource2Profile.IsEnabled = true;
             }
         }
 
@@ -236,7 +205,7 @@ namespace MoveImageForm
             if (forced == "Append") rbAppendMode.IsChecked = true;
             if (forced == "None") btnStart.IsEnabled = false;
 
-            btnCheckUpdate.IsEnabled = RoleEnforcer.CanCheckUpdate(_session.IsLoggedIn);
+            btnCheckUpdate.IsEnabled = true; // SMB 更新无需登录
         }
 
         private void UpdateTransferStatusBar()
@@ -264,16 +233,7 @@ namespace MoveImageForm
 
         private void TabMain_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (tabMain.SelectedIndex == 3) // Tab 4 = 账号管理
-            {
-                if (!RoleEnforcer.CanManageAccounts(_session.CurrentRole))
-                {
-                    tabMain.SelectedIndex = e.RemovedItems.Count > 0
-                        ? tabMain.Items.IndexOf(e.RemovedItems[0]) : 0;
-                    MessageBox.Show("请使用管理员账号登录后再访问账号管理", "权限不足",
-                        MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-            }
+            // 账号管理 Tab 已对所有人开放（包括未登录状态），不再做权限拦截
         }
 
         #endregion
@@ -319,8 +279,9 @@ namespace MoveImageForm
                 SaveConfig();
                 _session.Logout();
                 _notifyIcon.Visible = false;
-                _notifyIcon.Dispose();
                 System.Windows.Application.Current.Shutdown();
+                // Shutdown 会触发 Window_Closing，Dispose 放在 Shutdown 之后
+                _notifyIcon.Dispose();
             };
 
             contextMenu.Items.Add(showItem);
@@ -337,12 +298,39 @@ namespace MoveImageForm
             LoadConfig();
             UpdateUIFromConfig();
 
-            // 不自动开始搬运 — 需要用户先登录
-            Log("请点击左上角「登录」连接 SFTP 服务器。");
-            Log("提示：每个监控文件夹可以绑定不同的 SFTP 账号和远程路径。");
+            // 自动登录：尝试用已保存的密码连接活跃账号
+            TryAutoLogin();
 
             InitProcessMonitoring();
             InitVersionUpdate();
+        }
+
+        /// <summary>尝试用已保存的（DPAPI 加密）密码自动登录（后台，不阻塞 UI）</summary>
+        private async void TryAutoLogin()
+        {
+            var activeProfiles = new List<SftpProfile>();
+            foreach (var name in _config.GetActiveProfileNames().Distinct())
+            {
+                var p = _config.FindProfile(name);
+                if (p == null) continue;
+                // SMB 无密码也可自动连接；SFTP/S3 需要有密码
+                if (p.IsSmb || !string.IsNullOrEmpty(p.Password))
+                    activeProfiles.Add(p);
+            }
+
+            if (activeProfiles.Count == 0)
+            {
+                Log("请点击左上角「登录」连接 SFTP/S3 服务器。");
+                Log("提示：每个监控文件夹可以绑定不同的账号和远程路径。");
+                return;
+            }
+
+            Log($"[系统] 检测到 {activeProfiles.Count} 个已保存的账号，正在自动登录...");
+            int success = await Task.Run(() => _session.LoginAll(activeProfiles));
+            if (success > 0)
+                Log($"[系统] 自动登录成功: {success}/{activeProfiles.Count} 个账号。");
+            else
+                Log("自动登录失败，请点击「登录」手动连接。");
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
@@ -391,8 +379,8 @@ namespace MoveImageForm
             StartMoving();
         }
 
-        /// <summary>获取指定 sourceKey 对应的 SFTP 会话（自动重连）</summary>
-        private ISftpService GetOrReconnectSession(string sourceKey)
+        /// <summary>获取指定 sourceKey 对应的传输会话（自动重连，SMB 按需创建）</summary>
+        private IFileTransferService GetOrReconnectSession(string sourceKey)
         {
             var profile = _config.GetProfileForSource(sourceKey);
             if (profile == null) return null;
@@ -400,7 +388,16 @@ namespace MoveImageForm
             var session = _session.GetSession(profile.Name);
             if (session != null && session.IsConnected) return session;
 
-            // 尝试用缓存的密码重连
+            // SMB 无需认证，按需直接创建新会话（不依赖密码缓存）
+            if (profile.IsSmb)
+            {
+                var smb = new SmbService(profile.RemoteRoot);
+                try { smb.Connect(); } catch { return null; }
+                _session.RegisterSession(profile, smb, "");
+                return smb;
+            }
+
+            // SFTP/S3: 尝试用缓存的密码重连
             if (_session.Reconnect(profile.Name))
                 return _session.GetSession(profile.Name);
 
@@ -409,6 +406,7 @@ namespace MoveImageForm
 
         private void StartMoving()
         {
+            if (_isRunning) return; // 防止重复启动
             UpdateConfigFromUI();
 
             var activeProfiles = _config.GetActiveProfileNames().Distinct().ToList();
@@ -418,13 +416,32 @@ namespace MoveImageForm
                 return;
             }
 
-            if (!_session.IsLoggedIn)
+            // SMB 账号不需要登录即可传输；其他协议必须已登录
+            bool hasNonSmbProfile = activeProfiles.Any(name =>
             {
-                MessageBox.Show("请先点击左上角「登录」连接 SFTP 服务器！");
+                var p = _config.FindProfile(name);
+                return p != null && !p.IsSmb;
+            });
+
+            if (!_session.IsLoggedIn && hasNonSmbProfile)
+            {
+                MessageBox.Show("请先点击左上角「登录」连接传输服务器！\n（选择了 SFTP/S3 账号，需要先登录）",
+                    "未登录", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
             }
 
+            // 获取有效角色：如果所有活跃账号都是 SMB，无需登录即有 admin 权限
             string role = _session.CurrentRole;
+            if (string.IsNullOrEmpty(role))
+            {
+                bool allSmb = activeProfiles.Count > 0 && activeProfiles.All(name =>
+                {
+                    var p = _config.FindProfile(name);
+                    return p != null && p.IsSmb;
+                });
+                if (allSmb) role = "admin";
+            }
+
             if (!RoleEnforcer.CanUpload(role))
             {
                 MessageBox.Show($"当前账号「{_session.CurrentRole}」没有上传权限！", "权限不足",
@@ -472,6 +489,9 @@ namespace MoveImageForm
                     btnStart.IsEnabled = true;
                     btnStop.IsEnabled = false;
                     SetUIEnabled(true);
+                    // 停止后重新应用登录状态和角色权限
+                    UpdateLoginButton();
+                    ApplyRoleRestrictions();
                     Log("停止监控。");
                 });
             }
@@ -559,7 +579,7 @@ namespace MoveImageForm
             }
         }
 
-        private bool ShouldMoveFromSource(string source, ISftpService sftp)
+        private bool ShouldMoveFromSource(string source, IFileTransferService sftp)
         {
             if (!_config.EnableSizeRule && !_config.EnableCountRule)
                 return false;
@@ -584,22 +604,27 @@ namespace MoveImageForm
             return false;
         }
 
-        private Task MoveFilesToSftpAsync(string source, ISftpService sftp, CancellationToken token)
+        private Task MoveFilesToSftpAsync(string source, IFileTransferService sftp, CancellationToken token)
         {
+            // 用 Dispatcher 在 UI 线程上安全读取控件值，避免跨线程访问异常
+            string role = _session.CurrentRole;
+            bool isAppend = false, isCopy = false, isCut = false;
+            Dispatcher.Invoke(() =>
+            {
+                isAppend = RoleEnforcer.ForcedTransferMode(role) == "Append"
+                    || rbAppendMode.IsChecked == true;
+                isCopy = rbCopyMode.IsChecked == true
+                    && RoleEnforcer.CanChooseTransferMode(role);
+                isCut = rbCutMode.IsChecked == true
+                    && RoleEnforcer.CanChooseTransferMode(role);
+            });
+
             return Task.Run(() =>
             {
                 try
                 {
                     DirectoryInfo dir = new DirectoryInfo(source);
                     FileInfo[] files = dir.GetFiles("*", SearchOption.AllDirectories);
-
-                    string role = _session.CurrentRole;
-                    bool isAppend = RoleEnforcer.ForcedTransferMode(role) == "Append"
-                        || rbAppendMode.IsChecked == true;
-                    bool isCopy = rbCopyMode.IsChecked == true
-                        && RoleEnforcer.CanChooseTransferMode(role);
-                    bool isCut = rbCutMode.IsChecked == true
-                        && RoleEnforcer.CanChooseTransferMode(role);
 
                     int success = 0, skip = 0, fail = 0;
 
@@ -1220,7 +1245,7 @@ namespace MoveImageForm
 
         #endregion
 
-        #region Tab 3 — Version Update (SFTP)
+        #region Tab 3 — Version Update (SMB)
 
         private void InitVersionUpdate()
         {
@@ -1243,7 +1268,8 @@ namespace MoveImageForm
                 _updateTimer.Start();
             }
 
-            Task.Run(() => CheckForUpdate());
+            if (!string.IsNullOrWhiteSpace(_config.UpdateServerPath))
+                Task.Run(() => CheckForUpdate());
         }
 
         private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e)
@@ -1259,23 +1285,19 @@ namespace MoveImageForm
         {
             try
             {
-                var sftp = _session.ActiveSftp;
-                if (sftp == null)
+                string updatePath = _config.UpdateServerPath?.Trim();
+                if (string.IsNullOrEmpty(updatePath))
                 {
                     Dispatcher.InvokeAsync(() =>
                     {
-                        txtCloudVersion.Text = "未登录";
-                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (请先登录)";
+                        txtCloudVersion.Text = "未配置";
+                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (未配置更新服务器)";
                     });
                     return;
                 }
 
-                if (!sftp.IsConnected)
-                {
-                    try { sftp.Connect(); } catch { }
-                }
-
-                if (!sftp.FileExists("versions/version.json"))
+                string versionFile = Path.Combine(updatePath, "version.json");
+                if (!File.Exists(versionFile))
                 {
                     Dispatcher.InvokeAsync(() =>
                     {
@@ -1287,7 +1309,7 @@ namespace MoveImageForm
                     return;
                 }
 
-                string jsonText = sftp.ReadAllText("versions/version.json");
+                string jsonText = File.ReadAllText(versionFile);
                 var jss = new System.Web.Script.Serialization.JavaScriptSerializer();
                 var data = jss.Deserialize<dynamic>(jsonText);
                 string latestVersion = data["latest"]?.ToString() ?? "";
@@ -1385,10 +1407,10 @@ namespace MoveImageForm
             {
                 try
                 {
-                    var sftp = _session.ActiveSftp;
-                    if (sftp == null)
+                    string updatePath = _config.UpdateServerPath?.Trim();
+                    if (string.IsNullOrEmpty(updatePath))
                     {
-                        Dispatcher.InvokeAsync(() => Log("更新下载失败: 未登录"));
+                        Dispatcher.InvokeAsync(() => Log("更新下载失败: 未配置更新服务器"));
                         return;
                     }
 
@@ -1401,15 +1423,17 @@ namespace MoveImageForm
                         Directory.Delete(tempDir, true);
                     Directory.CreateDirectory(tempDir);
 
-                    string remoteVerPath = "versions/" + version;
-                    if (!sftp.FileExists(remoteVerPath + "/MoveImageForm.exe"))
+                    string remoteVerDir = Path.Combine(updatePath, version);
+                    if (!Directory.Exists(remoteVerDir) ||
+                        !File.Exists(Path.Combine(remoteVerDir, "MoveImageForm.exe")))
                     {
                         Dispatcher.InvokeAsync(() =>
                             Log("更新下载失败: 云端版本文件不完整"));
                         return;
                     }
 
-                    DownloadDirectoryFromSftp(sftp, remoteVerPath, tempDir);
+                    // 从 SMB 共享复制文件
+                    CopyDirectoryRecursive(remoteVerDir, tempDir);
 
                     if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
                     {
@@ -1420,7 +1444,8 @@ namespace MoveImageForm
 
                     string batPath = Path.Combine(appRoot, "update.bat");
                     string batContent = GenerateUpdateBat(appRoot, version);
-                    File.WriteAllText(batPath, batContent, System.Text.Encoding.UTF8);
+                    // 使用系统默认编码（中文 Windows 为 GBK），避免 cmd.exe 解析中文路径乱码
+                    File.WriteAllText(batPath, batContent, Encoding.Default);
 
                     Dispatcher.InvokeAsync(() =>
                     {
@@ -1451,25 +1476,21 @@ namespace MoveImageForm
             });
         }
 
-        private void DownloadDirectoryFromSftp(ISftpService sftp, string remoteDir, string localDir)
+        private static void CopyDirectoryRecursive(string sourceDir, string destDir)
         {
-            var items = sftp.ListDirectory(remoteDir);
-            foreach (var item in items)
+            if (!Directory.Exists(destDir))
+                Directory.CreateDirectory(destDir);
+
+            foreach (var file in Directory.GetFiles(sourceDir))
             {
-                if (item.Name == "." || item.Name == "..") continue;
+                string destFile = Path.Combine(destDir, Path.GetFileName(file));
+                File.Copy(file, destFile, true);
+            }
 
-                string remotePath = remoteDir + "/" + item.Name;
-                string localPath = Path.Combine(localDir, item.Name);
-
-                if (item.IsDirectory)
-                {
-                    Directory.CreateDirectory(localPath);
-                    DownloadDirectoryFromSftp(sftp, remotePath, localPath);
-                }
-                else
-                {
-                    sftp.DownloadFile(remotePath, localPath);
-                }
+            foreach (var dir in Directory.GetDirectories(sourceDir))
+            {
+                string destSubDir = Path.Combine(destDir, Path.GetFileName(dir));
+                CopyDirectoryRecursive(dir, destSubDir);
             }
         }
 
@@ -1484,6 +1505,9 @@ namespace MoveImageForm
             return $@"@echo off
 chcp 65001 >nul
 echo 正在更新 VP运维工具 到版本 {version}...
+echo.
+echo 请勿关闭此窗口，更新完成后将自动启动程序...
+echo.
 
 timeout /t 2 /nobreak >nul
 
@@ -1497,6 +1521,8 @@ if exist ""{newVerDir}"" (
 robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE >nul 2>&1
 
 rd /s /q ""{tempDir}"" 2>nul
+
+echo idle> ""{Path.Combine(appRoot, "update.status")}""
 
 if exist ""{launcherPath}"" (
     start """" ""{launcherPath}""
@@ -1580,36 +1606,51 @@ del ""%~f0"" & exit
 
         #region Tab 4 — Account Management
 
-        private void BtnChangePassword_Click(object sender, RoutedEventArgs e)
+        private void BtnEditAccount_Click(object sender, RoutedEventArgs e)
         {
             var btn = (Button)sender;
             var profile = (SftpProfile)btn.Tag;
 
-            var dialog = new ChangePasswordDialog(profile.Name);
+            var dialog = new AddAccountDialog(profile);
             dialog.Owner = this;
             if (dialog.ShowDialog() == true)
             {
-                profile.Password = dialog.NewPassword;
-                profile.EncryptPassword();
+                // 密码有变动时需要重新加密
+                if (!string.IsNullOrEmpty(dialog.Profile.Password)
+                    && !DpapiHelper.IsEncrypted(dialog.Profile.Password))
+                {
+                    dialog.Profile.EncryptPassword();
+                }
                 SaveConfig();
                 RefreshAccountList();
-                Log($"[系统] 账号「{profile.Name}」密码已修改（已加密保存）");
+                UpdateSourceProfileDropdowns();
+                Log($"[系统] 账号「{dialog.Profile.Name}」已更新");
             }
         }
 
         private void BtnAddAccount_Click(object sender, RoutedEventArgs e)
         {
-            var dialog = new AddAccountDialog();
-            dialog.Owner = this;
-            if (dialog.ShowDialog() == true)
+            try
             {
-                // 加密密码后保存
-                dialog.Profile.EncryptPassword();
-                _config.SftpProfiles.Add(dialog.Profile);
-                SaveConfig();
-                RefreshAccountList();
-                UpdateSourceProfileDropdowns();
-                Log($"[系统] 已添加账号「{dialog.Profile.Name}」({dialog.Profile.Role}) — 密码已加密");
+                var dialog = new AddAccountDialog();
+                dialog.Owner = this;
+                if (dialog.ShowDialog() == true && dialog.Profile != null)
+                {
+                    // 加密密码后保存
+                    dialog.Profile.EncryptPassword();
+                    if (_config == null) _config = new AppConfig();
+                    if (_config.SftpProfiles == null) _config.SftpProfiles = new System.Collections.Generic.List<Models.SftpProfile>();
+                    _config.SftpProfiles.Add(dialog.Profile);
+                    SaveConfig();
+                    RefreshAccountList();
+                    UpdateSourceProfileDropdowns();
+                    Log($"[系统] 已添加账号「{dialog.Profile.Name}」({dialog.Profile.Role}) — 密码已加密");
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"添加账号失败:\n{ex.Message}\n\n堆栈:\n{ex.StackTrace}",
+                    "错误", MessageBoxButton.OK, MessageBoxImage.Error);
             }
         }
 
@@ -1684,6 +1725,20 @@ del ""%~f0"" & exit
                         // 但为了 SaveConfig 时能正确处理，让加密密码留在内存中
                         // 使用时通过 GetPlainPassword() 获取明文
                     }
+                }
+
+                // 确保 SMB 系统账号存在（内置账号，不可删除）
+                if (!_config.SftpProfiles.Any(p => p.IsSmb))
+                {
+                    _config.SftpProfiles.Insert(0, new SftpProfile
+                    {
+                        Name = SftpProfile.SmbProfileName,
+                        TransportType = "SMB",
+                        Role = "admin",
+                        RemoteRoot = ""
+                    });
+                    needsSave = true;
+                    Log("已添加内置「SMB传输」账号，可在账号管理中编辑目标文件夹。");
                 }
 
                 if (needsSave)
@@ -1807,6 +1862,7 @@ del ""%~f0"" & exit
                 {
                     Name = node.SelectSingleNode("Name")?.InnerText?.Trim() ?? "",
                     Role = node.SelectSingleNode("Role")?.InnerText?.Trim() ?? "upload",
+                    TransportType = node.SelectSingleNode("TransportType")?.InnerText?.Trim() ?? "SFTP",
                     Host = node.SelectSingleNode("Host")?.InnerText?.Trim() ?? "",
                     Port = int.TryParse(node.SelectSingleNode("Port")?.InnerText?.Trim(), out int port) ? port : 22,
                     Username = node.SelectSingleNode("Username")?.InnerText?.Trim() ?? "",
@@ -1920,14 +1976,18 @@ del ""%~f0"" & exit
         private void SaveConfig()
         {
             if (_isLoadingConfig) return;
+            if (_config == null) return;
 
             try
             {
                 // 加密所有 Profile 密码后再序列化
-                foreach (var profile in _config.SftpProfiles)
+                if (_config.SftpProfiles != null)
                 {
-                    if (!profile.IsPasswordEncrypted && !string.IsNullOrEmpty(profile.Password))
-                        profile.EncryptPassword();
+                    foreach (var profile in _config.SftpProfiles)
+                    {
+                        if (!profile.IsPasswordEncrypted && !string.IsNullOrEmpty(profile.Password))
+                            profile.EncryptPassword();
+                    }
                 }
 
                 string path = GetConfigFilePath();

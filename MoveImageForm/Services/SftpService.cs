@@ -3,10 +3,11 @@ using System.IO;
 using System.Linq;
 using Renci.SshNet;
 using Renci.SshNet.Sftp;
+using MoveImageForm.Models;
 
 namespace MoveImageForm.Services
 {
-    public class SftpService : ISftpService
+    public class SftpService : IFileTransferService
     {
         private SftpClient _client;
         private readonly string _host;
@@ -29,6 +30,14 @@ namespace MoveImageForm.Services
         public void Connect()
         {
             if (IsConnected) return;
+
+            // 释放旧的 SftpClient（避免资源泄漏）
+            if (_client != null)
+            {
+                try { _client.Disconnect(); } catch { }
+                try { _client.Dispose(); } catch { }
+                _client = null;
+            }
 
             _client = new SftpClient(_host, _port, _username, _password);
             _client.Connect();
@@ -158,7 +167,7 @@ namespace MoveImageForm.Services
         {
             string fullPath = ResolveRemotePath(remoteRelativePath);
             if (_client.Exists(fullPath) &&
-                !_client.ListDirectory(fullPath).Any(f => !f.Name.EndsWith(".")))
+                !_client.ListDirectory(fullPath).Any(f => f.Name != "." && f.Name != ".."))
             {
                 _client.DeleteDirectory(fullPath);
             }
@@ -194,11 +203,19 @@ namespace MoveImageForm.Services
         }
 
         /// <summary>列出远程目录下的文件和文件夹</summary>
-        public ISftpFile[] ListDirectory(string remoteRelativePath)
+        public RemoteFileInfo[] ListDirectory(string remoteRelativePath)
         {
             string fullPath = ResolveRemotePath(remoteRelativePath);
             return _client.ListDirectory(fullPath)
                 .Where(f => !f.Name.StartsWith("."))
+                .Select(f => new RemoteFileInfo
+                {
+                    Name = f.Name,
+                    FullPath = f.FullName,
+                    Length = f.Length,
+                    LastWriteTime = f.LastWriteTime,
+                    IsDirectory = f.IsDirectory
+                })
                 .ToArray();
         }
 

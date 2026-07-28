@@ -1,9 +1,13 @@
 using System;
-using Renci.SshNet.Sftp;
+using MoveImageForm.Models;
 
 namespace MoveImageForm.Services
 {
-    public interface ISftpService : IDisposable
+    /// <summary>
+    /// 文件传输服务接口 — 协议无关。
+    /// 现有实现：SftpService (SSH.NET), S3Service (Minio SDK)。
+    /// </summary>
+    public interface IFileTransferService : IDisposable
     {
         bool IsConnected { get; }
         void Connect();
@@ -31,7 +35,7 @@ namespace MoveImageForm.Services
         string ReadAllText(string remoteRelativePath);
 
         /// <summary>列出远程目录下的文件和文件夹</summary>
-        ISftpFile[] ListDirectory(string remoteRelativePath);
+        RemoteFileInfo[] ListDirectory(string remoteRelativePath);
 
         /// <summary>获取远程文件最后修改时间</summary>
         DateTime GetLastWriteTime(string remoteRelativePath);

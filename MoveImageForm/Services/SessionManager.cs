@@ -12,7 +12,7 @@ namespace MoveImageForm.Services
     public class SessionManager
     {
         // 按 Profile.Name 索引的会话
-        private readonly Dictionary<string, ISftpService> _sessions = new Dictionary<string, ISftpService>();
+        private readonly Dictionary<string, IFileTransferService> _sessions = new Dictionary<string, IFileTransferService>();
         private readonly Dictionary<string, SftpProfile> _sessionProfiles = new Dictionary<string, SftpProfile>();
         private readonly Dictionary<string, string> _sessionPasswords = new Dictionary<string, string>();
 
@@ -36,7 +36,7 @@ namespace MoveImageForm.Services
             (CurrentProfile?.Role ?? "").ToLower();
 
         /// <summary>默认 SFTP 服务（第一个连接的会话）</summary>
-        public ISftpService ActiveSftp =>
+        public IFileTransferService ActiveSftp =>
             _sessions.Values.FirstOrDefault(s => s.IsConnected);
 
         public event Action LoginStateChanged;
@@ -48,7 +48,7 @@ namespace MoveImageForm.Services
         }
 
         /// <summary>获取指定 Profile 的 SFTP 会话</summary>
-        public ISftpService GetSession(string profileName)
+        public IFileTransferService GetSession(string profileName)
         {
             if (string.IsNullOrEmpty(profileName)) return null;
             _sessions.TryGetValue(profileName, out var s);
@@ -62,7 +62,7 @@ namespace MoveImageForm.Services
             return pwd;
         }
 
-        /// <summary>用指定 Profile 和密码登录，建立 SFTP 连接。失败时抛异常。</summary>
+        /// <summary>用指定 Profile 和密码登录，建立传输连接。失败时抛异常。</summary>
         public void Login(SftpProfile profile, string password)
         {
             if (profile == null) throw new ArgumentNullException(nameof(profile));
@@ -70,13 +70,46 @@ namespace MoveImageForm.Services
             // 如果已连接同名 Profile，先断开
             DisconnectProfile(profile.Name);
 
-            var sftp = new SftpService(profile.Host, profile.Port, profile.Username, password, profile.RemoteRoot);
-            sftp.Connect();
+            var transport = CreateTransport(profile, password);
+            transport.Connect();
 
-            _sessions[profile.Name] = sftp;
+            _sessions[profile.Name] = transport;
             _sessionProfiles[profile.Name] = profile;
             _sessionPasswords[profile.Name] = password;
             LoginStateChanged?.Invoke();
+        }
+
+        /// <summary>外部按需注册已创建的会话（用于 SMB 等无需登录的场景）</summary>
+        public void RegisterSession(SftpProfile profile, IFileTransferService transport, string password)
+        {
+            if (profile == null) throw new ArgumentNullException(nameof(profile));
+
+            DisconnectProfile(profile.Name);
+            _sessions[profile.Name] = transport;
+            _sessionProfiles[profile.Name] = profile;
+            _sessionPasswords[profile.Name] = password ?? "";
+            LoginStateChanged?.Invoke();
+        }
+
+        /// <summary>根据 Profile 的 TransportType 创建对应的传输服务</summary>
+        private IFileTransferService CreateTransport(SftpProfile profile, string password)
+        {
+            if (profile.IsSmb)
+            {
+                return new SmbService(profile.RemoteRoot);
+            }
+            if (profile.IsS3)
+            {
+                return new S3Service(
+                    endpoint: profile.Host,
+                    port: profile.Port,
+                    accessKey: profile.Username,
+                    secretKey: password,
+                    bucketName: profile.RemoteRoot,
+                    useSsl: profile.Port == 443
+                );
+            }
+            return new SftpService(profile.Host, profile.Port, profile.Username, password, profile.RemoteRoot);
         }
 
         /// <summary>使用存储在 config 中的（DPAPI 解密后）密码批量登录所有活跃 Profile</summary>
@@ -87,6 +120,14 @@ namespace MoveImageForm.Services
             {
                 try
                 {
+                    // SMB 无需密码，直接连接
+                    if (profile.IsSmb)
+                    {
+                        Login(profile, "");
+                        success++;
+                        continue;
+                    }
+
                     string password = profile.GetPlainPassword();
                     if (string.IsNullOrEmpty(password))
                         continue; // 密码为空或解密失败，跳过
