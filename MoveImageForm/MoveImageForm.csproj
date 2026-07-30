@@ -91,6 +91,7 @@
     <Compile Include="ProcessViewModel.cs" />
     <Compile Include="Models\RemoteFileInfo.cs" />
     <Compile Include="Models\SftpProfile.cs" />
+    <Compile Include="Models\SourceFolderEntry.cs" />
     <Compile Include="Services\DpapiHelper.cs" />
     <Compile Include="Services\IFileTransferService.cs" />
     <Compile Include="Services\S3Service.cs" />
@@ -98,6 +99,7 @@
     <Compile Include="Services\SmbService.cs" />
     <Compile Include="Services\SessionManager.cs" />
     <Compile Include="Services\RoleEnforcer.cs" />
+    <Compile Include="Helpers\CrashDumper.cs" />
     <Compile Include="Views\LoginDialog.xaml.cs">
       <DependentUpon>LoginDialog.xaml</DependentUpon>
       <SubType>Code</SubType>

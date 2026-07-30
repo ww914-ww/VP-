@@ -27,6 +27,10 @@ namespace MoveImageForm
         private DateTime _lastMoveTime;
         private System.Windows.Forms.NotifyIcon _notifyIcon;
 
+        // 动态源文件夹列表
+        private ObservableCollection<SourceFolderEntry> _sourceFolders
+            = new ObservableCollection<SourceFolderEntry>();
+
         // SFTP 会话管理
         private readonly SessionManager _session = new SessionManager();
 
@@ -61,6 +65,17 @@ namespace MoveImageForm
         {
             if (_session.IsLoggedIn)
             {
+                // 搬运进行中：弹确认框
+                if (_isRunning)
+                {
+                    var result = MessageBox.Show(
+                        "文件搬运正在进行中，登出将自动停止所有搬运任务。\n\n是否确认登出？",
+                        "搬运进行中", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (result != MessageBoxResult.Yes)
+                        return;
+                    StopMoving();
+                }
+
                 // 登出时清除保存的密码
                 if (_config != null && _config.SftpProfiles != null)
                 {
@@ -159,9 +174,21 @@ namespace MoveImageForm
 
         private void UpdateLoginButton()
         {
+            // 搬运进行中：禁用登出按钮
+            if (_isRunning)
+            {
+                btnLogin.IsEnabled = false;
+                btnLogin.Content = "⏳ 搬运中...";
+                btnLogin.ToolTip = "文件搬运进行中，请先停止搬运再登出";
+                spLoginStatus.Visibility = _session.IsLoggedIn ? Visibility.Visible : Visibility.Collapsed;
+                return;
+            }
+
             if (_session.IsLoggedIn)
             {
+                btnLogin.IsEnabled = true;
                 btnLogin.Content = "登出";
+                btnLogin.ToolTip = null;
                 spLoginStatus.Visibility = Visibility.Visible;
 
                 var parts = new List<string>();
@@ -174,18 +201,18 @@ namespace MoveImageForm
                 txtLoginInfo.Text = string.Join(" | ", parts);
 
                 // 登录后锁定账号选择器，防止传输中途切换账号
-                cmbSource1Profile.IsEnabled = false;
-                cmbSource2Profile.IsEnabled = false;
+                SetSourceProfileComboBoxesEnabled(false);
             }
             else
             {
+                btnLogin.IsEnabled = true;
                 btnLogin.Content = "登录";
+                btnLogin.ToolTip = null;
                 spLoginStatus.Visibility = Visibility.Collapsed;
                 txtLoginInfo.Text = "";
 
                 // 登出后恢复账号选择器
-                cmbSource1Profile.IsEnabled = true;
-                cmbSource2Profile.IsEnabled = true;
+                SetSourceProfileComboBoxesEnabled(true);
             }
         }
 
@@ -196,13 +223,18 @@ namespace MoveImageForm
             bool canUpload = RoleEnforcer.CanUpload(role);
             bool canChooseMode = RoleEnforcer.CanChooseTransferMode(role);
 
-            rbAppendMode.IsEnabled = canUpload;
-            rbCopyMode.IsEnabled = canChooseMode;
-            rbCutMode.IsEnabled = canChooseMode;
             btnStart.IsEnabled = canUpload;
 
+            // 更新每个目录的传输模式下拉框权限
+            SetSourceTransferModeComboBoxesEnabled(canChooseMode);
+
             string forced = RoleEnforcer.ForcedTransferMode(role);
-            if (forced == "Append") rbAppendMode.IsChecked = true;
+            if (forced == "Append")
+            {
+                // 强制仅追加：更新所有条目
+                foreach (var entry in _sourceFolders)
+                    entry.TransferMode = "Append";
+            }
             if (forced == "None") btnStart.IsEnabled = false;
 
             btnCheckUpdate.IsEnabled = true; // SMB 更新无需登录
@@ -275,6 +307,15 @@ namespace MoveImageForm
             var exitItem = new System.Windows.Forms.ToolStripMenuItem("完全退出");
             exitItem.Click += (s, e) =>
             {
+                if (_isRunning)
+                {
+                    var result = MessageBox.Show(
+                        "文件搬运正在进行中，退出将停止所有任务。\n\n是否确认退出？",
+                        "搬运进行中", MessageBoxButton.YesNo, MessageBoxImage.Warning);
+                    if (result != MessageBoxResult.Yes)
+                        return;
+                    StopMoving();
+                }
                 UpdateConfigFromUI();
                 SaveConfig();
                 _session.Logout();
@@ -350,24 +391,163 @@ namespace MoveImageForm
 
         #region Tab 1 — File Browsing
 
-        private void BtnBrowseSource_Click(object sender, RoutedEventArgs e)
+        private void BtnBrowseSourceGeneric_Click(object sender, RoutedEventArgs e)
         {
+            var button = sender as Button;
+            var entry = button?.DataContext as SourceFolderEntry;
+            if (entry == null) return;
+
             using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
             {
-                dialog.Description = "选择监控文件夹";
+                dialog.Description = $"选择监控文件夹 - {entry.Label}";
                 if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                    txtSourcePath.Text = dialog.SelectedPath;
+                    entry.Path = dialog.SelectedPath;
             }
         }
 
-        private void BtnBrowseSource2_Click(object sender, RoutedEventArgs e)
+        private void BtnAddSourceFolder_Click(object sender, RoutedEventArgs e)
         {
-            using (var dialog = new System.Windows.Forms.FolderBrowserDialog())
+            var entry = new SourceFolderEntry
             {
-                dialog.Description = "选择监控文件夹2";
-                if (dialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
-                    txtSourcePath2.Text = dialog.SelectedPath;
+                TransferMode = _config?.TransferMode ?? "Cut"
+            };
+            _sourceFolders.Add(entry);
+            ReindexSourceFolders();
+        }
+
+        private void BtnRemoveSource_Click(object sender, RoutedEventArgs e)
+        {
+            var button = sender as Button;
+            var entry = button?.DataContext as SourceFolderEntry;
+            if (entry == null) return;
+
+            _sourceFolders.Remove(entry);
+            ReindexSourceFolders();
+        }
+
+        private void CmbSourceProfile_Loaded(object sender, RoutedEventArgs e)
+        {
+            var cmb = sender as ComboBox;
+            if (_config?.SftpProfiles == null) return;
+
+            cmb.ItemsSource = _config.SftpProfiles;
+            var entry = cmb.DataContext as SourceFolderEntry;
+            if (entry == null) return;
+
+            // 选中当前绑定的 Profile
+            if (!string.IsNullOrEmpty(entry.ProfileName))
+            {
+                foreach (var item in cmb.Items)
+                {
+                    if (item is SftpProfile p && p.Name == entry.ProfileName)
+                    {
+                        cmb.SelectedItem = item;
+                        break;
+                    }
+                }
             }
+        }
+
+        private void CmbSourceProfile_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isLoadingConfig) return;
+
+            var cmb = sender as ComboBox;
+            var entry = cmb?.DataContext as SourceFolderEntry;
+            if (entry == null) return;
+
+            entry.ProfileName = (cmb.SelectedItem as SftpProfile)?.Name ?? "";
+        }
+
+        private void CmbTransferMode_Loaded(object sender, RoutedEventArgs e)
+        {
+            var cmb = sender as ComboBox;
+            if (cmb == null || cmb.Items.Count > 0) return;
+
+            cmb.Items.Add(new ComboBoxItem { Content = "仅追加", Tag = "Append" });
+            cmb.Items.Add(new ComboBoxItem { Content = "复制", Tag = "Copy" });
+            cmb.Items.Add(new ComboBoxItem { Content = "剪切", Tag = "Cut" });
+
+            // 根据角色权限禁用不可选模式
+            string role = _session.CurrentRole;
+            bool canChoose = RoleEnforcer.CanChooseTransferMode(role);
+            if (!canChoose)
+            {
+                // 非 admin/upload 角色只能选仅追加
+                foreach (ComboBoxItem item in cmb.Items)
+                {
+                    if (item.Tag as string != "Append")
+                        item.IsEnabled = false;
+                }
+            }
+        }
+
+        /// <summary>遍历 ItemsControl 中所有 TransferMode ComboBox，统一设置启用/禁用</summary>
+        private void SetSourceTransferModeComboBoxesEnabled(bool canChooseMode)
+        {
+            foreach (var entry in _sourceFolders)
+            {
+                var container = icSourceFolders.ItemContainerGenerator.ContainerFromItem(entry);
+                if (container == null) continue;
+
+                // 在可视树中找所有 ComboBox（第 0 个是 Profile，第 1 个是 TransferMode）
+                var combos = FindVisualChildren<ComboBox>(container).ToList();
+                var transferCmb = combos.Count >= 2 ? combos[1] : null;
+                if (transferCmb == null) continue;
+
+                transferCmb.IsEnabled = canChooseMode;
+                foreach (ComboBoxItem item in transferCmb.Items)
+                {
+                    if (item.Tag as string == "Append")
+                        item.IsEnabled = true; // 仅追加始终可用
+                    else
+                        item.IsEnabled = canChooseMode;
+                }
+            }
+        }
+
+        /// <summary>在可视树中查找所有指定类型的子元素</summary>
+        private static IEnumerable<T> FindVisualChildren<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is T t) yield return t;
+                foreach (var descendant in FindVisualChildren<T>(child))
+                    yield return descendant;
+            }
+        }
+
+        /// <summary>重新编号：每个条目 Index = 其在列表中的位置</summary>
+        private void ReindexSourceFolders()
+        {
+            for (int i = 0; i < _sourceFolders.Count; i++)
+                _sourceFolders[i].Index = i;
+        }
+
+        /// <summary>遍历 ItemsControl 中所有 ComboBox，统一设置启用/禁用</summary>
+        private void SetSourceProfileComboBoxesEnabled(bool enabled)
+        {
+            foreach (var entry in _sourceFolders)
+            {
+                var container = icSourceFolders.ItemContainerGenerator.ContainerFromItem(entry);
+                if (container == null) continue;
+                var cmb = FindVisualChild<ComboBox>(container);
+                if (cmb != null) cmb.IsEnabled = enabled;
+            }
+        }
+
+        /// <summary>在可视树中查找指定类型的子元素</summary>
+        private static T FindVisualChild<T>(DependencyObject parent) where T : DependencyObject
+        {
+            for (int i = 0; i < System.Windows.Media.VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = System.Windows.Media.VisualTreeHelper.GetChild(parent, i);
+                if (child is T t) return t;
+                var result = FindVisualChild<T>(child);
+                if (result != null) return result;
+            }
+            return null;
         }
 
         #endregion
@@ -379,10 +559,10 @@ namespace MoveImageForm
             StartMoving();
         }
 
-        /// <summary>获取指定 sourceKey 对应的传输会话（自动重连，SMB 按需创建）</summary>
-        private IFileTransferService GetOrReconnectSession(string sourceKey)
+        /// <summary>获取指定 SourceFolderEntry 对应的传输会话（自动重连，SMB 按需创建）</summary>
+        private IFileTransferService GetOrReconnectSession(SourceFolderEntry entry)
         {
-            var profile = _config.GetProfileForSource(sourceKey);
+            var profile = _config.GetProfileForSource(entry);
             if (profile == null) return null;
 
             var session = _session.GetSession(profile.Name);
@@ -449,10 +629,10 @@ namespace MoveImageForm
                 return;
             }
 
-            bool pair1Valid = !string.IsNullOrWhiteSpace(txtSourcePath.Text) && Directory.Exists(txtSourcePath.Text);
-            bool pair2Valid = !string.IsNullOrWhiteSpace(txtSourcePath2.Text) && Directory.Exists(txtSourcePath2.Text);
+            bool anyValid = _sourceFolders.Any(sf =>
+                !string.IsNullOrWhiteSpace(sf.Path) && Directory.Exists(sf.Path));
 
-            if (!pair1Valid && !pair2Valid)
+            if (!anyValid)
             {
                 MessageBox.Show("请至少设置一组有效的监控文件夹！");
                 return;
@@ -464,6 +644,9 @@ namespace MoveImageForm
             btnStart.IsEnabled = false;
             btnStop.IsEnabled = true;
             SetUIEnabled(false);
+
+            // 搬运期间禁止登出
+            Dispatcher.Invoke(() => UpdateLoginButton());
 
             _cancellationTokenSource = new CancellationTokenSource();
             _lastMoveTime = DateTime.Now;
@@ -499,13 +682,7 @@ namespace MoveImageForm
 
         private void SetUIEnabled(bool enabled)
         {
-            txtSourcePath.IsEnabled = enabled;
-            txtSourcePath2.IsEnabled = enabled;
-            cmbSource1Profile.IsEnabled = enabled;
-            cmbSource2Profile.IsEnabled = enabled;
-            rbAppendMode.IsEnabled = enabled;
-            rbCopyMode.IsEnabled = enabled;
-            rbCutMode.IsEnabled = enabled;
+            icSourceFolders.IsEnabled = enabled;
             chkTimeRule.IsEnabled = enabled;
             txtTimeInterval.IsEnabled = enabled;
             chkSizeRule.IsEnabled = enabled;
@@ -526,44 +703,36 @@ namespace MoveImageForm
                         (DateTime.Now - _lastMoveTime).TotalSeconds >= _config.TimeIntervalSeconds;
                     bool movedAny = false;
 
-                    // SourcePath 1
-                    if (Directory.Exists(_config.SourcePath) && !string.IsNullOrWhiteSpace(_config.SourcePath1Profile))
+                    // 获取当前活跃的源文件夹快照（UI 线程）
+                    List<SourceFolderEntry> activeEntries = null;
+                    await Dispatcher.InvokeAsync(() =>
                     {
-                        var sftp = GetOrReconnectSession("SourcePath");
-                        if (sftp != null)
-                        {
-                            if (timeTriggered || ShouldMoveFromSource(_config.SourcePath, sftp))
-                            {
-                                if (timeTriggered) Log($"[{_config.SourcePath}] 触发时间规则...");
-                                await MoveFilesToSftpAsync(_config.SourcePath, sftp, token);
-                                if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath, _config.EmptyFolderHours, token);
-                                movedAny = true;
-                            }
-                        }
-                        else
-                        {
-                            Log($"[{_config.SourcePath}] SFTP 未连接 ({_config.SourcePath1Profile})，跳过");
-                        }
-                    }
+                        activeEntries = _sourceFolders
+                            .Where(sf => Directory.Exists(sf.Path) && !string.IsNullOrWhiteSpace(sf.ProfileName))
+                            .ToList();
+                    });
 
-                    // SourcePath 2
-                    if (Directory.Exists(_config.SourcePath2) && !string.IsNullOrWhiteSpace(_config.SourcePath2Profile))
+                    if (activeEntries != null)
                     {
-                        var sftp = GetOrReconnectSession("SourcePath2");
-                        if (sftp != null)
+                        foreach (var entry in activeEntries)
                         {
-                            if (timeTriggered || ShouldMoveFromSource(_config.SourcePath2, sftp))
+                            if (token.IsCancellationRequested) break;
+
+                            var sftp = GetOrReconnectSession(entry);
+                            if (sftp != null)
                             {
-                                if (timeTriggered) Log($"[{_config.SourcePath2}] 触发时间规则...");
-                                await MoveFilesToSftpAsync(_config.SourcePath2, sftp, token);
-                                if (_config.EnableEmptyFolderRule) CleanEmptyFolders(_config.SourcePath2, _config.EmptyFolderHours, token);
-                                movedAny = true;
+                                if (timeTriggered || ShouldMoveFromSource(entry.Path, sftp))
+                                {
+                                    if (timeTriggered) Log($"[{entry.Path}] 触发时间规则...");
+                                    await MoveFilesToSftpAsync(entry.Path, sftp, entry.TransferMode, token);
+                                    if (_config.EnableEmptyFolderRule) CleanEmptyFolders(entry.Path, _config.EmptyFolderHours, token);
+                                    movedAny = true;
+                                }
                             }
-                        }
-                        else
-                        {
-                            string profileName = _config.SourcePath2Profile;
-                            Log($"[{_config.SourcePath2}] SFTP 未连接 ({profileName})，跳过");
+                            else
+                            {
+                                Log($"[{entry.Path}] 传输未连接 ({entry.ProfileName})，跳过");
+                            }
                         }
                     }
 
@@ -604,33 +773,44 @@ namespace MoveImageForm
             return false;
         }
 
-        private Task MoveFilesToSftpAsync(string source, IFileTransferService sftp, CancellationToken token)
+        private Task MoveFilesToSftpAsync(string source, IFileTransferService sftp, string transferMode, CancellationToken token)
         {
-            // 用 Dispatcher 在 UI 线程上安全读取控件值，避免跨线程访问异常
+            // 根据角色权限和条目设置决定实际传输模式
             string role = _session.CurrentRole;
-            bool isAppend = false, isCopy = false, isCut = false;
-            Dispatcher.Invoke(() =>
-            {
-                isAppend = RoleEnforcer.ForcedTransferMode(role) == "Append"
-                    || rbAppendMode.IsChecked == true;
-                isCopy = rbCopyMode.IsChecked == true
-                    && RoleEnforcer.CanChooseTransferMode(role);
-                isCut = rbCutMode.IsChecked == true
-                    && RoleEnforcer.CanChooseTransferMode(role);
-            });
+            string effectiveMode = RoleEnforcer.ForcedTransferMode(role) == "Append" ? "Append" : (transferMode ?? "Cut");
+            if (!RoleEnforcer.CanChooseTransferMode(role) && effectiveMode != "Append")
+                effectiveMode = "Append";
+
+            bool isAppend = effectiveMode == "Append";
+            bool isCopy = effectiveMode == "Copy";
+            bool isCut = effectiveMode == "Cut";
+            string modeText = isAppend ? "追加" : (isCut ? "剪切" : "复制");
 
             return Task.Run(() =>
             {
+                var sw = Stopwatch.StartNew();
+                long bytesTransferred = 0;
+                int lastReportedPercent = -1;
+
                 try
                 {
                     DirectoryInfo dir = new DirectoryInfo(source);
                     FileInfo[] files = dir.GetFiles("*", SearchOption.AllDirectories);
 
+                    int totalFiles = files.Length;
+                    long totalBytes = files.Sum(f => f.Length);
                     int success = 0, skip = 0, fail = 0;
+                    int processed = 0;
+
+                    Log($"[开始] {source} | 模式: {modeText} | 共 {totalFiles} 个文件, {totalBytes / 1048576.0:F1} MB");
 
                     foreach (FileInfo file in files)
                     {
-                        if (token.IsCancellationRequested) return;
+                        if (token.IsCancellationRequested)
+                        {
+                            Log($"[中断] {source} | 已处理 {processed}/{totalFiles} | 成功 {success} | 跳过 {skip} | 失败 {fail}");
+                            return;
+                        }
                         try
                         {
                             string relPath = file.FullName.Substring(source.Length)
@@ -640,28 +820,48 @@ namespace MoveImageForm
                             if (isCopy && sftp.IsTargetFileCurrent(file.FullName, relPath))
                             {
                                 skip++;
+                                processed++;
                                 continue;
                             }
 
                             if (sftp.UploadFile(file.FullName, relPath, appendOnly: isAppend))
                             {
                                 success++;
+                                bytesTransferred += file.Length;
                                 if (isCut) { try { file.Delete(); } catch { } }
                             }
                             else skip++;
+
+                            processed++;
+
+                            // 每 20% 输出一次进度
+                            int percent = totalFiles > 0 ? processed * 100 / totalFiles : 100;
+                            int milestone = (percent / 20) * 20;
+                            if (milestone > lastReportedPercent || (percent >= 100 && lastReportedPercent < 100))
+                            {
+                                lastReportedPercent = milestone;
+                                double mbDone = bytesTransferred / 1048576.0;
+                                double elapsed = sw.Elapsed.TotalSeconds;
+                                double speed = elapsed > 0 ? mbDone / elapsed : 0;
+                                Log($"[进度 {percent}%] 已处理 {processed}/{totalFiles} | 成功 {success} | 跳过 {skip} | 失败 {fail} | 已传输 {mbDone:F1} MB | 速率 {speed:F1} MB/s");
+                            }
                         }
                         catch (Exception ex)
                         {
                             fail++;
+                            processed++;
                             Log($"上传 {file.Name} 失败: {ex.Message}");
                         }
                     }
 
-                    string modeText = isAppend ? "追加" : (isCut ? "剪切" : "复制");
-                    Log($"上传完成 ({modeText}): 成功 {success}, 跳过 {skip}, 失败 {fail}");
+                    sw.Stop();
+                    double totalMb = bytesTransferred / 1048576.0;
+                    double avgSpeed = sw.Elapsed.TotalSeconds > 0 ? totalMb / sw.Elapsed.TotalSeconds : 0;
+                    Log($"[完成] {source} | 成功 {success} | 跳过 {skip} | 失败 {fail} | 耗时 {sw.Elapsed.Minutes}分{sw.Elapsed.Seconds}秒 | 总传输 {totalMb:F1} MB | 平均速率 {avgSpeed:F1} MB/s");
                 }
                 catch (Exception ex)
                 {
+                    sw.Stop();
                     Log($"上传异常: {ex.Message}");
                 }
             }, token);
@@ -1442,10 +1642,14 @@ namespace MoveImageForm
                         return;
                     }
 
+                    // 写入 ready 状态，即使 bat 执行失败，Launcher 重启后也能重试安装
+                    string statusPath = Path.Combine(appRoot, "update.status");
+                    File.WriteAllText(statusPath, "ready", new UTF8Encoding(false));
+
                     string batPath = Path.Combine(appRoot, "update.bat");
                     string batContent = GenerateUpdateBat(appRoot, version);
                     // 使用系统默认编码（中文 Windows 为 GBK），避免 cmd.exe 解析中文路径乱码
-                    File.WriteAllText(batPath, batContent, Encoding.Default);
+                    File.WriteAllText(batPath, batContent, new UTF8Encoding(false));
 
                     Dispatcher.InvokeAsync(() =>
                     {
@@ -1503,24 +1707,32 @@ namespace MoveImageForm
             string launcherPath = Path.Combine(appRoot, "Launcher.exe");
 
             return $@"@echo off
-chcp 65001 >nul
-echo 正在更新 VP运维工具 到版本 {version}...
+echo Updating VP Tool to version {version}...
 echo.
-echo 请勿关闭此窗口，更新完成后将自动启动程序...
+echo Do not close this window. The program will restart automatically...
 echo.
 
 timeout /t 2 /nobreak >nul
 
 taskkill /f /im MoveImageForm.exe >nul 2>&1
+taskkill /f /im Launcher.exe >nul 2>&1
 
 if exist ""{newVerDir}"" (
     if not exist ""{backupDir}"" mkdir ""{backupDir}""
-    robocopy ""{newVerDir}"" ""{backupDir}\{version}.bak"" /E /MOVE >nul 2>&1
+    robocopy ""{newVerDir}"" ""{backupDir}\{version}.bak"" /E /MOVE /R:2 /W:2 >nul 2>&1
+    if errorlevel 8 goto :update_error
 )
 
-robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE >nul 2>&1
+robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE /R:2 /W:2 >nul 2>&1
+if errorlevel 8 goto :update_error
 
 rd /s /q ""{tempDir}"" 2>nul
+
+if exist ""{newVerDir}\Launcher.exe"" (
+    echo Updating Launcher...
+    copy /Y ""{newVerDir}\Launcher.exe"" ""{launcherPath}"" >nul 2>&1
+    if errorlevel 1 goto :update_error
+)
 
 echo idle> ""{Path.Combine(appRoot, "update.status")}""
 
@@ -1531,8 +1743,16 @@ if exist ""{launcherPath}"" (
 )
 
 del ""%~f0"" & exit
+
+:update_error
+echo Update failed. Please retry or contact administrator.
+echo Error: file copy failed, files remain in temp directory.
+echo.
+pause
+exit /b 1
 ";
         }
+
 
         private void ChkAutoCheck_Changed(object sender, RoutedEventArgs e)
         {
@@ -1811,6 +2031,7 @@ del ""%~f0"" & exit
                     SourcePath2 = GetXmlText(doc, "SourcePath2"),
                     SourcePath1Profile = GetXmlText(doc, "SourcePath1Profile"),
                     SourcePath2Profile = GetXmlText(doc, "SourcePath2Profile"),
+                    SourceFolders = ParseSourceFolders(doc),
                     TransferMode = GetXmlText(doc, "TransferMode", "Cut"),
                     EnableTimeRule = GetXmlBool(doc, "EnableTimeRule", true),
                     TimeIntervalSeconds = GetXmlInt(doc, "TimeIntervalSeconds", 60),
@@ -1848,6 +2069,26 @@ del ""%~f0"" & exit
             {
                 return false;
             }
+        }
+
+        private static List<SourceFolderEntry> ParseSourceFolders(XmlDocument doc)
+        {
+            var folders = new List<SourceFolderEntry>();
+            var nodes = doc.SelectNodes("//SourceFolders/SourceFolder");
+            if (nodes == null) return folders;
+
+            foreach (XmlNode node in nodes)
+            {
+                string transferMode = node.SelectSingleNode("TransferMode")?.InnerText?.Trim() ?? "";
+                if (string.IsNullOrEmpty(transferMode)) transferMode = "Cut";
+                folders.Add(new SourceFolderEntry
+                {
+                    Path = node.SelectSingleNode("Path")?.InnerText?.Trim() ?? "",
+                    ProfileName = node.SelectSingleNode("ProfileName")?.InnerText?.Trim() ?? "",
+                    TransferMode = transferMode
+                });
+            }
+            return folders;
         }
 
         private static List<SftpProfile> ParseSftpProfiles(XmlDocument doc)
@@ -1924,6 +2165,21 @@ del ""%~f0"" & exit
         private bool MergeConfig(AppConfig target, AppConfig source)
         {
             bool changed = false;
+
+            // 合并源文件夹列表：target 为空时从 source 复制
+            if ((target.SourceFolders == null || target.SourceFolders.Count == 0)
+                && source.SourceFolders != null && source.SourceFolders.Count > 0)
+            {
+                target.SourceFolders = source.SourceFolders.Select(sf => new SourceFolderEntry
+                {
+                    Path = sf.Path,
+                    ProfileName = sf.ProfileName,
+                    TransferMode = string.IsNullOrEmpty(sf.TransferMode) ? "Cut" : sf.TransferMode
+                }).ToList();
+                changed = true;
+            }
+
+            // 兼容旧格式
             if (MergeString(target.SourcePath, source.SourcePath, out string sourcePath))
             { target.SourcePath = sourcePath; changed = true; }
             if (MergeString(target.SourcePath2, source.SourcePath2, out string sourcePath2))
@@ -2012,20 +2268,25 @@ del ""%~f0"" & exit
             _isLoadingConfig = true;
             try
             {
-                txtSourcePath.Text = _config.SourcePath;
-                txtSourcePath2.Text = _config.SourcePath2;
+                // 迁移旧配置
+                _config.MigrateSourceFolders();
 
-                // 填充 Profile 下拉框
-                UpdateSourceProfileDropdowns();
-
-                // 选中当前绑定的 Profile
-                SelectProfileInCombo(cmbSource1Profile, _config.SourcePath1Profile);
-                SelectProfileInCombo(cmbSource2Profile, _config.SourcePath2Profile);
-
-                // TransferMode 映射
-                if (_config.TransferMode == "Append") rbAppendMode.IsChecked = true;
-                else if (_config.TransferMode == "Copy") rbCopyMode.IsChecked = true;
-                else rbCutMode.IsChecked = true;
+                // 填充源文件夹列表（深拷贝，避免直接修改 config 中的对象引用）
+                _sourceFolders.Clear();
+                if (_config.SourceFolders != null)
+                {
+                    foreach (var sf in _config.SourceFolders)
+                    {
+                        _sourceFolders.Add(new SourceFolderEntry
+                        {
+                            Path = sf.Path,
+                            ProfileName = sf.ProfileName,
+                            TransferMode = string.IsNullOrEmpty(sf.TransferMode) ? "Cut" : sf.TransferMode
+                        });
+                    }
+                }
+                ReindexSourceFolders();
+                icSourceFolders.ItemsSource = _sourceFolders;
 
                 chkTimeRule.IsChecked = _config.EnableTimeRule;
                 txtTimeInterval.Text = _config.TimeIntervalSeconds.ToString();
@@ -2055,11 +2316,31 @@ del ""%~f0"" & exit
 
         private void UpdateSourceProfileDropdowns()
         {
-            cmbSource1Profile.ItemsSource = null;
-            cmbSource1Profile.ItemsSource = _config.SftpProfiles;
+            // 刷新 ItemsControl 中所有 ComboBox 的 ItemsSource
+            foreach (var entry in _sourceFolders)
+            {
+                var container = icSourceFolders.ItemContainerGenerator.ContainerFromItem(entry);
+                if (container == null) continue;
+                var cmb = FindVisualChild<ComboBox>(container);
+                if (cmb == null) continue;
 
-            cmbSource2Profile.ItemsSource = null;
-            cmbSource2Profile.ItemsSource = _config.SftpProfiles;
+                var previousSelection = cmb.SelectedItem as SftpProfile;
+                cmb.ItemsSource = null;
+                cmb.ItemsSource = _config?.SftpProfiles;
+
+                // 恢复之前的选择
+                if (previousSelection != null)
+                {
+                    foreach (var item in cmb.Items)
+                    {
+                        if (item is SftpProfile p && p.Name == previousSelection.Name)
+                        {
+                            cmb.SelectedItem = item;
+                            break;
+                        }
+                    }
+                }
+            }
         }
 
         private void SelectProfileInCombo(ComboBox combo, string profileName)
@@ -2079,15 +2360,15 @@ del ""%~f0"" & exit
         {
             if (_isLoadingConfig) return;
 
-            _config.SourcePath = txtSourcePath.Text;
-            _config.SourcePath2 = txtSourcePath2.Text;
-
-            // 保存 Profile 选择
-            _config.SourcePath1Profile = (cmbSource1Profile.SelectedItem as SftpProfile)?.Name ?? "";
-            _config.SourcePath2Profile = (cmbSource2Profile.SelectedItem as SftpProfile)?.Name ?? "";
-
-            _config.TransferMode = rbAppendMode.IsChecked == true ? "Append"
-                : rbCopyMode.IsChecked == true ? "Copy" : "Cut";
+            // 从动态列表同步源文件夹配置
+            _config.SourceFolders = _sourceFolders
+                .Select(sf => new SourceFolderEntry
+                {
+                    Path = sf.Path,
+                    ProfileName = sf.ProfileName,
+                    TransferMode = sf.TransferMode
+                })
+                .ToList();
 
             _config.EnableTimeRule = chkTimeRule.IsChecked ?? false;
             int.TryParse(txtTimeInterval.Text, out int timeInterval);

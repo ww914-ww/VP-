@@ -61,43 +61,59 @@
                         <GroupBox Header="源文件夹" Grid.Row="1" Margin="0,0,0,10">
                             <Grid Margin="5">
                                 <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto"/>
+                                    <RowDefinition Height="*"/>
                                     <RowDefinition Height="Auto"/>
                                 </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="80"/>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="60"/>
-                                    <ColumnDefinition Width="40"/>
-                                    <ColumnDefinition Width="120"/>
-                                </Grid.ColumnDefinitions>
 
-                                <TextBlock Text="监控文件夹1:" VerticalAlignment="Center" Grid.Row="0" Grid.Column="0"/>
-                                <TextBox x:Name="txtSourcePath" Grid.Row="0" Grid.Column="1" Margin="5"/>
-                                <Button Content="浏览..." Grid.Row="0" Grid.Column="2" Margin="5" Click="BtnBrowseSource_Click"/>
-                                <TextBlock Text="账号:" VerticalAlignment="Center" Grid.Row="0" Grid.Column="3" Margin="5,0"/>
-                                <ComboBox x:Name="cmbSource1Profile" Grid.Row="0" Grid.Column="4" Height="24"
-                                          DisplayMemberPath="Name" Margin="5"/>
+                                <ScrollViewer Grid.Row="0" MaxHeight="220" VerticalScrollBarVisibility="Auto">
+                                    <ItemsControl x:Name="icSourceFolders">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Grid Margin="0,0,0,4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="80"/>
+                                                        <ColumnDefinition Width="*"/>
+                                                        <ColumnDefinition Width="60"/>
+                                                        <ColumnDefinition Width="40"/>
+                                                        <ColumnDefinition Width="120"/>
+                                                        <ColumnDefinition Width="80"/>
+                                                        <ColumnDefinition Width="30"/>
+                                                    </Grid.ColumnDefinitions>
 
-                                <TextBlock Text="监控文件夹2:" VerticalAlignment="Center" Grid.Row="1" Grid.Column="0" Margin="0,5,0,0"/>
-                                <TextBox x:Name="txtSourcePath2" Grid.Row="1" Grid.Column="1" Margin="5"/>
-                                <Button Content="浏览..." Grid.Row="1" Grid.Column="2" Margin="5" Click="BtnBrowseSource2_Click"/>
-                                <TextBlock Text="账号:" VerticalAlignment="Center" Grid.Row="1" Grid.Column="3" Margin="5,0"/>
-                                <ComboBox x:Name="cmbSource2Profile" Grid.Row="1" Grid.Column="4" Height="24"
-                                          DisplayMemberPath="Name" Margin="5"/>
+                                                    <TextBlock Text="{Binding Label}" VerticalAlignment="Center"/>
+                                                    <TextBox Grid.Column="1" Margin="5,0" Text="{Binding Path, UpdateSourceTrigger=LostFocus}"/>
+                                                    <Button Grid.Column="2" Content="浏览..." Margin="3,0"
+                                                            Click="BtnBrowseSourceGeneric_Click" Tag="{Binding}"/>
+                                                    <TextBlock Grid.Column="3" Text="账号:" VerticalAlignment="Center" Margin="2,0"/>
+                                                    <ComboBox Grid.Column="4" Height="24" Margin="3,0"
+                                                              DisplayMemberPath="Name"
+                                                              Loaded="CmbSourceProfile_Loaded"
+                                                              SelectionChanged="CmbSourceProfile_SelectionChanged"/>
+                                                    <ComboBox Grid.Column="5" Height="24" Margin="3,0"
+                                                              SelectedValuePath="Tag"
+                                                              SelectedValue="{Binding TransferMode, Mode=TwoWay}"
+                                                              Loaded="CmbTransferMode_Loaded"
+                                                              ToolTip="此目录的传输模式"/>
+                                                    <Button Grid.Column="6" Content="✕" Margin="0,0"
+                                                            Foreground="#CC0000" Background="Transparent" BorderThickness="0"
+                                                            FontWeight="Bold" Cursor="Hand"
+                                                            Click="BtnRemoveSource_Click" Tag="{Binding}"
+                                                            ToolTip="移除此监控文件夹"/>
+                                                </Grid>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </ScrollViewer>
+
+                                <Button Grid.Row="1" Content="＋ 添加监控文件夹" HorizontalAlignment="Left"
+                                        Margin="0,6,0,0" Padding="8,3"
+                                        Click="BtnAddSourceFolder_Click"/>
                             </Grid>
                         </GroupBox>
 
                         <!-- 搬运规则 -->
                         <GroupBox Header="搬运规则" Grid.Row="2" Margin="0,0,0,10">
                             <StackPanel Margin="5">
-                                <TextBlock Text="传输模式:" FontWeight="Bold" Margin="0,0,0,5"/>
-                                <StackPanel Orientation="Horizontal" Margin="0,5">
-                                    <RadioButton x:Name="rbAppendMode" Content="仅追加（不覆盖已存在的文件）" GroupName="TransferMode" VerticalAlignment="Center"/>
-                                    <RadioButton x:Name="rbCopyMode" Content="复制（智能跳过未变文件）" GroupName="TransferMode" Margin="20,0,0,0" VerticalAlignment="Center"/>
-                                    <RadioButton x:Name="rbCutMode" Content="剪切（移动文件）" GroupName="TransferMode" Margin="20,0,0,0" VerticalAlignment="Center"/>
-                                </StackPanel>
-
                                 <Separator Margin="0,5"/>
                                 <TextBlock Text="触发条件 (满足任一勾选条件即触发搬运):" FontWeight="Bold" Margin="0,0,0,5"/>
                                 <StackPanel Orientation="Horizontal" Margin="0,5">

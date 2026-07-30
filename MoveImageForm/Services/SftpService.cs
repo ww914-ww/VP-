@@ -132,9 +132,12 @@ namespace MoveImageForm.Services
 
                 var remoteAttrs = _client.GetAttributes(remoteFullPath);
 
-                // 大小一致 + 本地修改时间 ≤ 远程修改时间 → 无需上传
-                return localInfo.Length == remoteAttrs.Size
-                    && localInfo.LastWriteTime <= remoteAttrs.LastWriteTime;
+                // 大小一致 + 本地修改时间不晚于远程 → 无需上传
+                // SFTP 协议 v3 时间戳精度为秒级，NTFS 为 100纳秒，使用 2 秒容差防止截断导致误判
+                bool sameSize = localInfo.Length == remoteAttrs.Size;
+                bool notNewer = localInfo.LastWriteTime <= remoteAttrs.LastWriteTime
+                    || Math.Abs((localInfo.LastWriteTime - remoteAttrs.LastWriteTime).TotalSeconds) < 2;
+                return sameSize && notNewer;
             }
             catch
             {

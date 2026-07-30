@@ -50,14 +50,9 @@ namespace MoveImageForm.Services
 
             if (appendOnly)
             {
-                // 追加模式：目标已存在则跳过
+                // 追加模式：目标已存在则跳过（与 SFTP/S3 行为一致，仅检查存在性）
                 if (File.Exists(destPath))
-                {
-                    var srcInfo = new FileInfo(localPath);
-                    var dstInfo = new FileInfo(destPath);
-                    if (dstInfo.Length == srcInfo.Length && dstInfo.LastWriteTime >= srcInfo.LastWriteTime)
-                        return true; // 已存在且一致，跳过
-                }
+                    return false; // skipped — already exists
             }
 
             File.Copy(localPath, destPath, true);
@@ -136,7 +131,12 @@ namespace MoveImageForm.Services
             if (!File.Exists(localPath) || !File.Exists(remotePath)) return false;
             var local = new FileInfo(localPath);
             var remote = new FileInfo(remotePath);
-            return local.Length == remote.Length && local.LastWriteTime <= remote.LastWriteTime;
+            // SMB 文件系统时间戳精度可能低于 NTFS（秒级 vs 100纳秒），
+            // 使用 2 秒容差避免因截断导致的虚假"文件不一致"判断
+            bool sameSize = local.Length == remote.Length;
+            bool notNewer = local.LastWriteTime <= remote.LastWriteTime
+                || Math.Abs((local.LastWriteTime - remote.LastWriteTime).TotalSeconds) < 2;
+            return sameSize && notNewer;
         }
     }
 }
