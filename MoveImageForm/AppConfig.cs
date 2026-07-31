@@ -21,6 +21,11 @@ namespace MoveImageForm
         [XmlElement]
         public string SourcePath2Profile { get; set; } = "";
 
+        /// <summary>多源文件夹配置；旧 SourcePath/SourcePath2 由 MigrateSourceFolders 迁移。</summary>
+        [XmlArray("SourceFolders")]
+        [XmlArrayItem("SourceFolder")]
+        public List<SourceFolderEntry> SourceFolders { get; set; } = new List<SourceFolderEntry>();
+
         [XmlElement]
         public string TransferMode { get; set; } = "Cut";
 
@@ -65,14 +70,63 @@ namespace MoveImageForm
             return FindProfile(profileName);
         }
 
-        /// <summary>返回所有在 SourcePath 中引用到的 Profile 名称</summary>
+        /// <summary>获取 SourceFolderEntry 绑定的 Profile。未配置返回 null。</summary>
+        public SftpProfile GetProfileForSource(SourceFolderEntry entry)
+        {
+            if (entry == null || string.IsNullOrWhiteSpace(entry.ProfileName))
+                return null;
+            return FindProfile(entry.ProfileName);
+        }
+
+        /// <summary>将旧 SourcePath/SourcePath2 迁移到 SourceFolders（仅当 SourceFolders 为空时）。</summary>
+        public void MigrateSourceFolders()
+        {
+            if (SourceFolders == null)
+                SourceFolders = new List<SourceFolderEntry>();
+            if (SourceFolders.Count > 0)
+                return;
+
+            string defaultMode = string.IsNullOrEmpty(TransferMode) ? "Cut" : TransferMode;
+
+            if (!string.IsNullOrWhiteSpace(SourcePath))
+            {
+                SourceFolders.Add(new SourceFolderEntry
+                {
+                    Path = SourcePath,
+                    ProfileName = SourcePath1Profile ?? "",
+                    TransferMode = defaultMode
+                });
+            }
+            if (!string.IsNullOrWhiteSpace(SourcePath2))
+            {
+                SourceFolders.Add(new SourceFolderEntry
+                {
+                    Path = SourcePath2,
+                    ProfileName = SourcePath2Profile ?? "",
+                    TransferMode = defaultMode
+                });
+            }
+        }
+
+        /// <summary>返回所有在源目录中引用到的 Profile 名称</summary>
         public List<string> GetActiveProfileNames()
         {
             var names = new List<string>();
-            if (!string.IsNullOrWhiteSpace(SourcePath) && !string.IsNullOrWhiteSpace(SourcePath1Profile))
-                names.Add(SourcePath1Profile);
-            if (!string.IsNullOrWhiteSpace(SourcePath2) && !string.IsNullOrWhiteSpace(SourcePath2Profile))
-                names.Add(SourcePath2Profile);
+            if (SourceFolders != null)
+            {
+                foreach (var sf in SourceFolders)
+                {
+                    if (!string.IsNullOrWhiteSpace(sf.Path) && !string.IsNullOrWhiteSpace(sf.ProfileName))
+                        names.Add(sf.ProfileName);
+                }
+            }
+            if (names.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(SourcePath) && !string.IsNullOrWhiteSpace(SourcePath1Profile))
+                    names.Add(SourcePath1Profile);
+                if (!string.IsNullOrWhiteSpace(SourcePath2) && !string.IsNullOrWhiteSpace(SourcePath2Profile))
+                    names.Add(SourcePath2Profile);
+            }
             return names;
         }
 
