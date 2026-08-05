@@ -111,15 +111,14 @@ namespace MoveImageForm.Services
 
         // ===== 文件操作 =====
 
-        public bool UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
+        public TransferUploadResult UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
         {
             try
             {
                 string key = NormalizeKey(remoteRelativePath);
 
-                // 追加模式：跳过已存在的文件
                 if (appendOnly && FileExists(remoteRelativePath))
-                    return false;
+                    return TransferUploadResult.Skip("远端已存在(追加模式)");
 
                 // 确保中间"目录"存在（S3 中可跳过，但也无妨创建一个空标记）
                 string dirKey = GetDirectoryKey(remoteRelativePath);
@@ -135,15 +134,15 @@ namespace MoveImageForm.Services
                     using (var response = SendRequest(HttpMethod.Put, key, "", content))
                     {
                         if (!response.IsSuccessStatusCode)
-                            return false;
+                            return TransferUploadResult.Fail($"HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
                     }
                 }
-                return true;
+                return TransferUploadResult.Ok();
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Debug.WriteLine($"UploadFile error: {ex.Message}");
-                return false;
+                return TransferUploadResult.Fail(ex.Message);
             }
         }
 

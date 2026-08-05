@@ -13,8 +13,11 @@ namespace MoveImageForm.Services
         void Connect();
         void Disconnect();
 
-        /// <summary>上传文件。appendOnly=true 时仅追加（跳过已存在的文件）。返回 true=成功, false=跳过</summary>
-        bool UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false);
+        /// <summary>
+        /// 上传文件。appendOnly=true 时仅追加（跳过已存在的文件）。
+        /// 通过 <see cref="TransferUploadResult"/> 区分成功 / 跳过 / 失败及原因。
+        /// </summary>
+        TransferUploadResult UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false);
 
         /// <summary>检查远程文件是否存在</summary>
         bool FileExists(string remoteRelativePath);

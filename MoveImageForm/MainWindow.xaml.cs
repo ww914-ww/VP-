@@ -25,6 +25,8 @@ namespace MoveImageForm
         private CancellationTokenSource _cancellationTokenSource;
         private bool _isRunning;
         private DateTime _lastMoveTime;
+        private int _moveRound;
+        private DateTime _lastIdleLogTime = DateTime.MinValue;
         private System.Windows.Forms.NotifyIcon _notifyIcon;
 
         // 动态源文件夹列表
@@ -73,7 +75,7 @@ namespace MoveImageForm
                         "搬运进行中", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                     if (result != MessageBoxResult.Yes)
                         return;
-                    StopMoving();
+                    StopMoving("用户登出");
                 }
 
                 // 登出时清除保存的密码
@@ -223,10 +225,20 @@ namespace MoveImageForm
             bool canUpload = RoleEnforcer.CanUpload(role);
             bool canChooseMode = RoleEnforcer.CanChooseTransferMode(role);
 
-            btnStart.IsEnabled = canUpload;
-
-            // 更新每个目录的传输模式下拉框权限
-            SetSourceTransferModeComboBoxesEnabled(canChooseMode);
+            // 搬运进行中：保持「开始」禁用、「停止」可用。
+            // 否则重连触发 LoginStateChanged → 此处会把 btnStart 重新打开，出现双按钮都可点。
+            if (_isRunning)
+            {
+                btnStart.IsEnabled = false;
+                btnStop.IsEnabled = true;
+                SetSourceTransferModeComboBoxesEnabled(false);
+            }
+            else
+            {
+                btnStart.IsEnabled = canUpload;
+                btnStop.IsEnabled = false;
+                SetSourceTransferModeComboBoxesEnabled(canChooseMode);
+            }
 
             string forced = RoleEnforcer.ForcedTransferMode(role);
             if (forced == "Append")
@@ -314,7 +326,7 @@ namespace MoveImageForm
                         "搬运进行中", MessageBoxButton.YesNo, MessageBoxImage.Warning);
                     if (result != MessageBoxResult.Yes)
                         return;
-                    StopMoving();
+                    StopMoving("用户退出程序");
                 }
                 UpdateConfigFromUI();
                 SaveConfig();
@@ -563,24 +575,48 @@ namespace MoveImageForm
         private IFileTransferService GetOrReconnectSession(SourceFolderEntry entry)
         {
             var profile = _config.GetProfileForSource(entry);
-            if (profile == null) return null;
+            if (profile == null)
+            {
+                Log($"[连接] {entry.Path} | 未找到账号「{entry.ProfileName}」");
+                return null;
+            }
 
             var session = _session.GetSession(profile.Name);
             if (session != null && session.IsConnected) return session;
 
+            string protocol = profile.IsSmb ? "SMB" : (profile.IsS3 ? "S3" : "SFTP");
+
             // SMB 无需认证，按需直接创建新会话（不依赖密码缓存）
             if (profile.IsSmb)
             {
+                Log($"[连接] {entry.Path} | 正在连接 {protocol}「{profile.Name}」→ {profile.RemoteRoot}...");
+                var swSmb = Stopwatch.StartNew();
                 var smb = new SmbService(profile.RemoteRoot);
-                try { smb.Connect(); } catch { return null; }
+                try
+                {
+                    smb.Connect();
+                }
+                catch (Exception ex)
+                {
+                    Log($"[连接] SMB「{profile.Name}」失败: {ex.Message}");
+                    return null;
+                }
                 _session.RegisterSession(profile, smb, "");
+                Log($"[连接] SMB「{profile.Name}」已就绪，耗时 {swSmb.ElapsedMilliseconds} ms");
                 return smb;
             }
 
             // SFTP/S3: 尝试用缓存的密码重连
+            Log($"[重连] {entry.Path} | 账号「{profile.Name}」({protocol}) 会话不可用，正在重连 → {profile.RemoteRoot}...");
+            SetMoveActivity($"重连 {profile.Name}...");
+            var sw = Stopwatch.StartNew();
             if (_session.Reconnect(profile.Name))
+            {
+                Log($"[重连] 账号「{profile.Name}」重连成功，耗时 {sw.ElapsedMilliseconds} ms");
                 return _session.GetSession(profile.Name);
+            }
 
+            Log($"[重连] 账号「{profile.Name}」重连失败（耗时 {sw.ElapsedMilliseconds} ms），请检查网络或重新登录");
             return null;
         }
 
@@ -641,6 +677,8 @@ namespace MoveImageForm
             SaveConfig();
 
             _isRunning = true;
+            _moveRound = 0;
+            _lastIdleLogTime = DateTime.MinValue;
             btnStart.IsEnabled = false;
             btnStop.IsEnabled = true;
             SetUIEnabled(false);
@@ -651,16 +689,44 @@ namespace MoveImageForm
             _cancellationTokenSource = new CancellationTokenSource();
             _lastMoveTime = DateTime.Now;
 
-            Log("开始监控 (SFTP)...");
+            var monitorFolders = _sourceFolders
+                .Where(sf => !string.IsNullOrWhiteSpace(sf.Path) && Directory.Exists(sf.Path) && !string.IsNullOrWhiteSpace(sf.ProfileName))
+                .ToList();
+
+            Log("[监控] 已启动");
+            Log($"[监控] 时间规则={(_config.EnableTimeRule ? "开" : "关")} 间隔={_config.TimeIntervalSeconds}s | " +
+                $"数量规则={(_config.EnableCountRule ? $"开({_config.CountLimit})" : "关")} | " +
+                $"空间规则={(_config.EnableSizeRule ? $"开({_config.SizeLimitMB}MB)" : "关")} | " +
+                $"空目录清理={(_config.EnableEmptyFolderRule ? $"开({_config.EmptyFolderHours}h)" : "关")}");
+
+            if (_config.EnableTimeRule)
+                Log($"[监控] 将在约 {_config.TimeIntervalSeconds}s 后首次按时间规则检查（启动时刻不算到期）");
+            else
+                Log("[监控] 时间规则未开启，仅在数量/空间规则命中时搬运");
+
+            int i = 0;
+            foreach (var sf in monitorFolders)
+            {
+                i++;
+                var p = _config.GetProfileForSource(sf);
+                string protocol = p == null ? "?" : (p.IsSmb ? "SMB" : (p.IsS3 ? "S3" : "SFTP"));
+                string remote = p?.RemoteRoot ?? "(无)";
+                Log($"[监控] 目录 {i}/{monitorFolders.Count}: {sf.Path} | 账号={sf.ProfileName} | {protocol} | 模式={sf.TransferMode} | 远端={remote}");
+            }
+
+            SetMoveActivity(_config.EnableTimeRule
+                ? $"等待首次检查（约 {_config.TimeIntervalSeconds}s）"
+                : "等待数量/空间规则触发");
+
             Task.Run(() => MonitorLoop(_cancellationTokenSource.Token));
         }
 
         private void BtnStop_Click(object sender, RoutedEventArgs e)
         {
-            StopMoving();
+            StopMoving("用户点击停止");
         }
 
-        private void StopMoving()
+        private void StopMoving(string reason = "用户停止")
         {
             if (_isRunning)
             {
@@ -675,9 +741,32 @@ namespace MoveImageForm
                     // 停止后重新应用登录状态和角色权限
                     UpdateLoginButton();
                     ApplyRoleRestrictions();
-                    Log("停止监控。");
+                    txtMoveActivity.Visibility = Visibility.Collapsed;
+                    txtMoveActivity.Text = "";
+                    Log($"[监控] 已停止 | 原因: {reason}");
                 });
             }
+        }
+
+        private void SetMoveActivity(string text)
+        {
+            Dispatcher.InvokeAsync(() =>
+            {
+                if (string.IsNullOrEmpty(text))
+                {
+                    txtMoveActivity.Text = "";
+                    txtMoveActivity.Visibility = Visibility.Collapsed;
+                    return;
+                }
+
+                if (_isRunning)
+                {
+                    borderTransferStatus.Visibility = Visibility.Visible;
+                    borderNotLoggedIn.Visibility = Visibility.Collapsed;
+                }
+                txtMoveActivity.Text = "当前: " + text;
+                txtMoveActivity.Visibility = Visibility.Visible;
+            });
         }
 
         private void SetUIEnabled(bool enabled)
@@ -712,39 +801,97 @@ namespace MoveImageForm
                             .ToList();
                     });
 
+                    int folderCount = activeEntries?.Count ?? 0;
+
+                    // 空转心跳：约每 60 秒说明还在等什么
+                    if (!timeTriggered && _config.EnableTimeRule && folderCount > 0)
+                    {
+                        double remain = _config.TimeIntervalSeconds - (DateTime.Now - _lastMoveTime).TotalSeconds;
+                        if (remain < 0) remain = 0;
+                        if ((DateTime.Now - _lastIdleLogTime).TotalSeconds >= 60)
+                        {
+                            _lastIdleLogTime = DateTime.Now;
+                            string nextAt = _lastMoveTime.AddSeconds(_config.TimeIntervalSeconds).ToString("HH:mm:ss");
+                            Log($"[等待] 时间规则未到期 | 约 {Math.Ceiling(remain)}s 后检查（下次≈{nextAt}，间隔 {_config.TimeIntervalSeconds}s，监控 {folderCount} 个目录）");
+                            SetMoveActivity($"等待中，约 {Math.Ceiling(remain)}s 后检查");
+                        }
+                    }
+
+                    if (timeTriggered)
+                    {
+                        _moveRound++;
+                        Log($"[轮次 #{_moveRound}] 开始 | 原因=时间规则 | 目录数={folderCount} | 间隔={_config.TimeIntervalSeconds}s");
+                        SetMoveActivity($"轮次 #{_moveRound}：准备处理 {folderCount} 个目录");
+                    }
+
                     if (activeEntries != null)
                     {
+                        int index = 0;
                         foreach (var entry in activeEntries)
                         {
                             if (token.IsCancellationRequested) break;
+                            index++;
+
+                            var profile = _config.GetProfileForSource(entry);
+                            string protocol = profile == null ? "?" : (profile.IsSmb ? "SMB" : (profile.IsS3 ? "S3" : "SFTP"));
+                            string remote = profile?.RemoteRoot ?? "(无)";
 
                             var sftp = GetOrReconnectSession(entry);
                             if (sftp != null)
                             {
-                                if (timeTriggered || ShouldMoveFromSource(entry.Path, sftp))
+                                bool sizeOrCount = !timeTriggered && ShouldMoveFromSource(entry.Path, sftp);
+                                if (timeTriggered || sizeOrCount)
                                 {
-                                    if (timeTriggered) Log($"[{entry.Path}] 触发时间规则...");
-                                    await MoveFilesToSftpAsync(entry.Path, sftp, entry.TransferMode, token);
-                                    if (_config.EnableEmptyFolderRule) CleanEmptyFolders(entry.Path, _config.EmptyFolderHours, token);
+                                    string reason = timeTriggered ? "时间规则" : "数量/空间规则";
+                                    Log($"[目录 {index}/{folderCount}] {entry.Path} | 账号={entry.ProfileName} | {protocol} | 模式={entry.TransferMode} | 远端={remote} | 触发={reason}");
+                                    SetMoveActivity($"[{index}/{folderCount}] {entry.Path}");
+
+                                    await MoveFilesToSftpAsync(entry, sftp, token);
+                                    if (_config.EnableEmptyFolderRule)
+                                    {
+                                        Log($"[清理] {entry.Path} | 检查空文件夹（>{_config.EmptyFolderHours}h）...");
+                                        CleanEmptyFolders(entry.Path, _config.EmptyFolderHours, token);
+                                    }
                                     movedAny = true;
                                 }
                             }
                             else
                             {
-                                Log($"[{entry.Path}] 传输未连接 ({entry.ProfileName})，跳过");
+                                Log($"[目录 {index}/{folderCount}] {entry.Path} | 传输未连接（账号={entry.ProfileName}），本轮跳过");
                             }
                         }
                     }
 
                     if (movedAny)
+                    {
                         _lastMoveTime = DateTime.Now;
+                        _lastIdleLogTime = DateTime.MinValue;
+                        if (timeTriggered)
+                        {
+                            string nextAt = _lastMoveTime.AddSeconds(_config.TimeIntervalSeconds).ToString("HH:mm:ss");
+                            Log($"[轮次 #{_moveRound}] 结束 | 下次时间规则约 {nextAt}（间隔 {_config.TimeIntervalSeconds}s）");
+                            SetMoveActivity($"轮次 #{_moveRound} 已结束，等待下次约 {_config.TimeIntervalSeconds}s");
+                        }
+                        else
+                        {
+                            Log("[规则] 本轮数量/空间触发的搬运已结束");
+                            SetMoveActivity("等待中");
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
-                    Log($"监控异常: {ex.Message}");
+                    Log($"[监控] 异常: {ex.Message}");
                 }
 
-                await Task.Delay(1000, token);
+                try
+                {
+                    await Task.Delay(1000, token);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
             }
         }
 
@@ -753,28 +900,140 @@ namespace MoveImageForm
             if (!_config.EnableSizeRule && !_config.EnableCountRule)
                 return false;
 
-            DirectoryInfo di = new DirectoryInfo(source);
-            if (!di.Exists) return false;
+            if (!Directory.Exists(source)) return false;
 
-            FileInfo[] files = di.GetFiles("*", SearchOption.AllDirectories);
-            long totalSize = files.Sum(f => f.Length);
-            int fileCount = files.Length;
+            // 数量/空间规则只做静默统计（监控循环会频繁调用，避免刷屏）
+            if (!TryCountSourceFiles(source, CancellationToken.None, logProgress: false, out int fileCount, out long totalSize))
+                return false;
 
             if (_config.EnableCountRule && fileCount >= _config.CountLimit)
             {
-                Log($"[{source}] 触发文件数量规则 (当前 {fileCount} 个)，开始上传...");
+                Log($"[规则] {source} | 触发文件数量规则 (当前 {fileCount} ≥ {_config.CountLimit})");
                 return true;
             }
             if (_config.EnableSizeRule && totalSize >= _config.SizeLimitMB * 1024 * 1024)
             {
-                Log($"[{source}] 触发文件空间规则 (当前 {totalSize / 1024.0 / 1024.0:F2} MB)，开始上传...");
+                Log($"[规则] {source} | 触发文件空间规则 (当前 {totalSize / 1024.0 / 1024.0:F2} MB ≥ {_config.SizeLimitMB} MB)");
                 return true;
             }
             return false;
         }
 
-        private Task MoveFilesToSftpAsync(string source, IFileTransferService sftp, string transferMode, CancellationToken token)
+        /// <summary>
+        /// 安全枚举源目录文件：跳过无权限目录与重解析点（junction/symlink），支持取消，并可选输出扫描进度。
+        /// 替代 Directory.GetFiles(AllDirectories)，避免大目录/坏链接导致长时间无日志卡死。
+        /// </summary>
+        private List<FileInfo> CollectSourceFiles(string source, CancellationToken token, bool logProgress, out long totalBytes)
         {
+            var files = new List<FileInfo>();
+            totalBytes = 0;
+            var stack = new Stack<string>();
+            stack.Push(source);
+
+            int lastLoggedCount = 0;
+            var progressSw = Stopwatch.StartNew();
+            if (logProgress)
+                Log($"[扫描] {source} | 正在枚举本地文件...");
+
+            while (stack.Count > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                string current = stack.Pop();
+
+                try
+                {
+                    foreach (string filePath in Directory.EnumerateFiles(current))
+                    {
+                        token.ThrowIfCancellationRequested();
+                        try
+                        {
+                            var fi = new FileInfo(filePath);
+                            files.Add(fi);
+                            totalBytes += fi.Length;
+                        }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+
+                        if (logProgress && (files.Count - lastLoggedCount >= 2000 || progressSw.Elapsed.TotalSeconds >= 3))
+                        {
+                            lastLoggedCount = files.Count;
+                            progressSw.Restart();
+                            Log($"[扫描] {source} | 已发现 {files.Count} 个文件, {totalBytes / 1048576.0:F1} MB...");
+                            SetMoveActivity($"扫描 {Path.GetFileName(source)}：已发现 {files.Count} 个文件");
+                        }
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    if (logProgress) Log($"[扫描] 无权限读取文件: {current}");
+                }
+                catch (DirectoryNotFoundException) { }
+                catch (IOException ex)
+                {
+                    if (logProgress) Log($"[扫描] 读取文件失败: {current} ({ex.Message})");
+                }
+
+                try
+                {
+                    foreach (string subDir in Directory.EnumerateDirectories(current))
+                    {
+                        try
+                        {
+                            var di = new DirectoryInfo(subDir);
+                            // 跳过 junction/symlink，防止环路或扫到超大网络路径导致卡死
+                            if ((di.Attributes & FileAttributes.ReparsePoint) != 0)
+                            {
+                                if (logProgress) Log($"[扫描] 跳过链接目录: {subDir}");
+                                continue;
+                            }
+                            stack.Push(subDir);
+                        }
+                        catch (IOException) { }
+                        catch (UnauthorizedAccessException) { }
+                    }
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    if (logProgress) Log($"[扫描] 无权限遍历子目录: {current}");
+                }
+                catch (DirectoryNotFoundException) { }
+                catch (IOException ex)
+                {
+                    if (logProgress) Log($"[扫描] 遍历子目录失败: {current} ({ex.Message})");
+                }
+            }
+
+            if (logProgress)
+                Log($"[扫描] {source} | 枚举完成，共 {files.Count} 个文件, {totalBytes / 1048576.0:F1} MB");
+            return files;
+        }
+
+        private bool TryCountSourceFiles(string source, CancellationToken token, bool logProgress, out int fileCount, out long totalBytes)
+        {
+            fileCount = 0;
+            totalBytes = 0;
+            try
+            {
+                var files = CollectSourceFiles(source, token, logProgress, out totalBytes);
+                fileCount = files.Count;
+                return true;
+            }
+            catch (OperationCanceledException)
+            {
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Log($"[{source}] 统计本地文件失败: {ex.Message}");
+                return false;
+            }
+        }
+
+        private Task MoveFilesToSftpAsync(SourceFolderEntry entry, IFileTransferService sftp, CancellationToken token)
+        {
+            string source = entry.Path;
+            string transferMode = entry.TransferMode;
+
             // 根据角色权限和条目设置决定实际传输模式
             string role = _session.CurrentRole;
             string effectiveMode = RoleEnforcer.ForcedTransferMode(role) == "Append" ? "Append" : (transferMode ?? "Cut");
@@ -791,18 +1050,27 @@ namespace MoveImageForm
                 var sw = Stopwatch.StartNew();
                 long bytesTransferred = 0;
                 int lastReportedPercent = -1;
+                var heartbeatSw = Stopwatch.StartNew();
+                int lastHeartbeatProcessed = 0;
+                int failLogged = 0;
+                const int MaxFailLogsPerFolder = 20;
 
                 try
                 {
-                    DirectoryInfo dir = new DirectoryInfo(source);
-                    FileInfo[] files = dir.GetFiles("*", SearchOption.AllDirectories);
+                    SetMoveActivity($"扫描 {source}");
+                    Log($"[准备] {source} | 模式: {modeText} | 开始扫描本地目录...");
+                    List<FileInfo> files = CollectSourceFiles(source, token, logProgress: true, out long totalBytes);
 
-                    int totalFiles = files.Length;
-                    long totalBytes = files.Sum(f => f.Length);
+                    int totalFiles = files.Count;
                     int success = 0, skip = 0, fail = 0;
+                    int skipSync = 0, skipExists = 0, skipOther = 0, deleteFail = 0;
                     int processed = 0;
 
                     Log($"[开始] {source} | 模式: {modeText} | 共 {totalFiles} 个文件, {totalBytes / 1048576.0:F1} MB");
+                    if (totalFiles == 0)
+                        Log($"[开始] {source} | 本地无文件，本目录空跑结束");
+
+                    SetMoveActivity($"上传 {Path.GetFileName(source)} 0/{totalFiles}");
 
                     foreach (FileInfo file in files)
                     {
@@ -820,19 +1088,60 @@ namespace MoveImageForm
                             if (isCopy && sftp.IsTargetFileCurrent(file.FullName, relPath))
                             {
                                 skip++;
+                                skipSync++;
                                 processed++;
-                                continue;
                             }
-
-                            if (sftp.UploadFile(file.FullName, relPath, appendOnly: isAppend))
+                            else
                             {
-                                success++;
-                                bytesTransferred += file.Length;
-                                if (isCut) { try { file.Delete(); } catch { } }
-                            }
-                            else skip++;
+                                TransferUploadResult uploadResult = sftp.UploadFile(file.FullName, relPath, appendOnly: isAppend);
+                                if (uploadResult.Success)
+                                {
+                                    success++;
+                                    bytesTransferred += file.Length;
+                                    if (isCut)
+                                    {
+                                        try { file.Delete(); }
+                                        catch (Exception dex)
+                                        {
+                                            deleteFail++;
+                                            if (deleteFail <= 5)
+                                                Log($"[警告] 剪切后删除本地失败: {file.Name} | {dex.Message}");
+                                        }
+                                    }
+                                }
+                                else if (uploadResult.Skipped)
+                                {
+                                    skip++;
+                                    if ((uploadResult.Detail ?? "").Contains("已存在"))
+                                        skipExists++;
+                                    else
+                                        skipOther++;
+                                }
+                                else
+                                {
+                                    fail++;
+                                    if (failLogged < MaxFailLogsPerFolder)
+                                    {
+                                        failLogged++;
+                                        Log($"[失败] {source} | {relPath} | {uploadResult.Detail}");
+                                        if (failLogged == MaxFailLogsPerFolder)
+                                            Log($"[失败] {source} | 后续失败仅计入统计（界面最多显示 {MaxFailLogsPerFolder} 条）");
+                                    }
+                                }
 
-                            processed++;
+                                processed++;
+                            }
+
+                            // 心跳：每 5 秒或每 50 个文件（避免大文件/慢网时长时间无日志）
+                            if (heartbeatSw.Elapsed.TotalSeconds >= 5 || processed - lastHeartbeatProcessed >= 50)
+                            {
+                                heartbeatSw.Restart();
+                                lastHeartbeatProcessed = processed;
+                                double mbDone = bytesTransferred / 1048576.0;
+                                double speed = sw.Elapsed.TotalSeconds > 0 ? mbDone / sw.Elapsed.TotalSeconds : 0;
+                                Log($"[心跳] {source} | {processed}/{totalFiles} | 当前 {file.Name} | 成功 {success} | 跳过 {skip} | 失败 {fail} | {mbDone:F1} MB | {speed:F1} MB/s");
+                                SetMoveActivity($"上传 {Path.GetFileName(source)} {processed}/{totalFiles} — {file.Name}");
+                            }
 
                             // 每 20% 输出一次进度
                             int percent = totalFiles > 0 ? processed * 100 / totalFiles : 100;
@@ -850,19 +1159,33 @@ namespace MoveImageForm
                         {
                             fail++;
                             processed++;
-                            Log($"上传 {file.Name} 失败: {ex.Message}");
+                            if (failLogged < MaxFailLogsPerFolder)
+                            {
+                                failLogged++;
+                                Log($"[失败] {source} | {file.Name} | {ex.Message}");
+                            }
                         }
                     }
 
                     sw.Stop();
                     double totalMb = bytesTransferred / 1048576.0;
                     double avgSpeed = sw.Elapsed.TotalSeconds > 0 ? totalMb / sw.Elapsed.TotalSeconds : 0;
-                    Log($"[完成] {source} | 成功 {success} | 跳过 {skip} | 失败 {fail} | 耗时 {sw.Elapsed.Minutes}分{sw.Elapsed.Seconds}秒 | 总传输 {totalMb:F1} MB | 平均速率 {avgSpeed:F1} MB/s");
+                    Log($"[完成] {source} | 成功 {success} | 跳过 {skip}（已同步 {skipSync} / 远端已存在 {skipExists} / 其他 {skipOther}） | 失败 {fail}" +
+                        (deleteFail > 0 ? $" | 删本地失败 {deleteFail}" : "") +
+                        $" | 耗时 {sw.Elapsed.Minutes}分{sw.Elapsed.Seconds}秒 | 总传输 {totalMb:F1} MB | 平均速率 {avgSpeed:F1} MB/s");
+
+                    if (isCopy && skipSync > 0 && success == 0 && fail == 0)
+                        Log($"[完成] {source} | 说明: 复制模式下远端文件已是最新，故全部跳过（本地文件保留）");
+                }
+                catch (OperationCanceledException)
+                {
+                    sw.Stop();
+                    Log($"[中断] {source} | 扫描/上传已取消");
                 }
                 catch (Exception ex)
                 {
                     sw.Stop();
-                    Log($"上传异常: {ex.Message}");
+                    Log($"[异常] {source} | 上传异常: {ex.Message}");
                 }
             }, token);
         }
@@ -1546,13 +1869,13 @@ namespace MoveImageForm
                     {
                         txtNewVersionInfo.Text = $"发现新版本 {latestVersion}{(string.IsNullOrWhiteSpace(cloudDate) ? "" : $" ({cloudDate})")}\n{cloudNote}";
                         borderNewVersion.Visibility = Visibility.Visible;
-                        Log($"发现新版本: {latestVersion}");
+                        Log($"[版本] 发现新版本: {latestVersion}");
                         ShowUpdateDialog(latestVersion, cloudDate, cloudNote);
                     }
                     else
                     {
                         borderNewVersion.Visibility = Visibility.Collapsed;
-                        Log($"版本检查: 已是最新版本 (本地 {localVerStr}, 云端 {latestVersion})");
+                        Log($"[版本] 已是最新版本 (本地 {localVerStr}, 云端 {latestVersion})");
                     }
                 });
             }
@@ -1560,7 +1883,7 @@ namespace MoveImageForm
             {
                 Dispatcher.InvokeAsync(() =>
                 {
-                    Log($"版本检查失败: {ex.Message}");
+                    Log($"[版本] 检查失败: {ex.Message}");
                     txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (检查失败)";
                 });
                 _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
@@ -1600,7 +1923,7 @@ namespace MoveImageForm
 
         private async void StartUpdateDownload(string version)
         {
-            Log($"开始下载更新 {version}...");
+            Log($"[版本] 开始下载更新 {version}...");
             btnCheckUpdate.IsEnabled = false;
 
             await Task.Run(() =>
@@ -1610,7 +1933,7 @@ namespace MoveImageForm
                     string updatePath = _config.UpdateServerPath?.Trim();
                     if (string.IsNullOrEmpty(updatePath))
                     {
-                        Dispatcher.InvokeAsync(() => Log("更新下载失败: 未配置更新服务器"));
+                        Dispatcher.InvokeAsync(() => Log("[版本] 更新下载失败: 未配置更新服务器"));
                         return;
                     }
 
@@ -1628,7 +1951,7 @@ namespace MoveImageForm
                         !File.Exists(Path.Combine(remoteVerDir, "MoveImageForm.exe")))
                     {
                         Dispatcher.InvokeAsync(() =>
-                            Log("更新下载失败: 云端版本文件不完整"));
+                            Log("[版本] 更新下载失败: 云端版本文件不完整"));
                         return;
                     }
 
@@ -1638,7 +1961,7 @@ namespace MoveImageForm
                     if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
                     {
                         Dispatcher.InvokeAsync(() =>
-                            Log("更新下载失败: 下载后文件不完整"));
+                            Log("[版本] 更新下载失败: 下载后文件不完整"));
                         return;
                     }
 
@@ -1653,7 +1976,7 @@ namespace MoveImageForm
 
                     Dispatcher.InvokeAsync(() =>
                     {
-                        Log("更新已下载，即将退出并执行更新...");
+                        Log("[版本] 更新已下载，即将退出并执行更新...");
                         var timer = new System.Windows.Threading.DispatcherTimer();
                         timer.Interval = TimeSpan.FromSeconds(1);
                         timer.Tick += (s, args) =>
@@ -1675,7 +1998,7 @@ namespace MoveImageForm
                 catch (Exception ex)
                 {
                     Dispatcher.InvokeAsync(() =>
-                        Log($"更新下载失败: {ex.Message}"));
+                        Log($"[版本] 更新下载失败: {ex.Message}"));
                 }
             });
         }
@@ -1767,14 +2090,14 @@ exit /b 1
                 }
                 _updateTimer.Start();
                 chkAutoCheck.Content = $"启用定时检查（每{_config.CheckIntervalMinutes}分钟）";
-                Log("已启用定时版本检查（每30分钟）");
+                Log("[版本] 已启用定时版本检查（每30分钟）");
             }
             else
             {
                 _config.CheckIntervalMinutes = 0;
                 _updateTimer?.Stop();
                 chkAutoCheck.Content = "启用定时检查（每30分钟）";
-                Log("已关闭定时版本检查");
+                Log("[版本] 已关闭定时版本检查");
             }
             SaveConfig();
         }
