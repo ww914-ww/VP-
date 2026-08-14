@@ -27,6 +27,98 @@
 | `tools/heartbeat-summary.ps1` | 新建 | 运维心跳汇总脚本 |
 | `Deploy-Server/部署说明_服务器端.txt` | 修改 | 灰度发布/回滚操作说明 |
 | `Deploy-Client/部署说明.txt` | 修改 | 心跳配置说明 |
+| `D:\FakeServer\AppUpdate\` | 模拟目录（不入库） | 本地模拟更新服务器（Task 0，离线替代 SMB） |
+| `D:\AppTest\`（及 -B、-C） | 模拟目录（不入库） | 模拟客户机安装目录（Task 0，三机演练用） |
+
+> **无内网测试约束（已确认）：** 开发期无云端内网（SMB 服务器、SFTP/S3 均不可达）。经代码确认 Launcher 更新链路全部是纯文件 IO（`File.Exists` + `CopyDirectory`，见 MainWindow.xaml.cs L151/L262/L291），`UpdateServerPath` 填本地路径与 UNC 路径走同一条代码路径 → **用本地目录模拟服务器即可完整演练灰度流程**（Task 0）。心跳真实传输联调**推迟到上内网后**，开发期只验证逻辑（Task 4 Step 5）。
+
+---
+
+## Task 0: 离线测试环境搭建（无内网替代方案）
+
+> 本任务只需一次，后续所有任务（Task 2 集成验证、Task 6 端到端演练）都使用这里的环境。
+> 原理：Launcher 的更新链路全部是纯文件 IO（`File.Exists` 检查 version.json / 完整性、`CopyDirectory` 下载、`Path.Combine` 拼路径），代码里没有任何 UNC/SMB 专用 API。把 `UpdateServerPath` 指向本地目录 `D:\FakeServer\AppUpdate`，与真实 `\\server\share` 走完全相同的代码路径 —— 模拟服务器上改 version.json 即时生效，灰度推进/回滚演练反而比真实 SMB 更顺。
+> 跳过项（用户已确认）：本机不部署 OpenSSH/MinIO，心跳真实传输联调推迟到上内网后（Task 4 Step 5 只验逻辑）。
+
+**Files:**
+- Create: `D:\FakeServer\AppUpdate\version.json`（模拟服务器，不入库）
+- Create: `D:\FakeServer\AppUpdate\versions\1.0.5\`（模拟云端稳定版目录）
+- Create: `D:\AppTest\`（模拟客户机，不入库）
+
+- [ ] **Step 1: 编译当前代码（确保有 Release 产物）**
+
+Run: `msbuild MoveImageForm\MoveImageForm.sln /p:Configuration=Release /v:m`
+Expected: `Build succeeded`（若之前已编译过可跳过）。
+
+- [ ] **Step 2: 搭建模拟更新服务器**
+
+创建目录结构：
+
+```
+D:\FakeServer\AppUpdate\
+├── version.json
+└── versions\
+    └── 1.0.5\
+        ├── MoveImageForm.exe
+        ├── MoveImageForm.exe.config
+        ├── Renci.SshNet.dll
+        ├── Microsoft.Bcl.AsyncInterfaces.dll
+        ├── System.Runtime.CompilerServices.Unsafe.dll
+        └── System.Threading.Tasks.Extensions.dll
+```
+
+1. 创建 `D:\FakeServer\AppUpdate\versions\1.0.5\`，把 `MoveImageForm\bin\Release\` 下全部文件复制进去（与真实 Deploy-Server 版本目录结构一致）
+2. 创建 `D:\FakeServer\AppUpdate\version.json`，内容与真实服务器格式一致：
+
+```json
+{
+    "latest": "1.0.5",
+    "versions": {
+        "1.0.5": { "date": "2026-08-01", "note": "离线模拟用稳定版" }
+    }
+}
+```
+
+- [ ] **Step 3: 搭建模拟客户机**
+
+创建 `D:\AppTest\`（结构与真实客户机一致）：
+
+```
+D:\AppTest\
+├── Launcher.exe
+├── Launcher.exe.config
+├── config.xml              ← ★ UpdateServerPath 指向本地模拟服务器
+├── update.status           ← 空文件
+└── versions\
+    └── 1.0.5\
+        ├── MoveImageForm.exe
+        └── ...（同模拟服务器版本目录）
+```
+
+1. `Launcher.exe` / `Launcher.exe.config` 从 `Launcher\bin\Release\` 复制
+2. `versions\1.0.5\` 直接从模拟服务器目录复制
+3. `config.xml` 内容（心跳**先不配置**，HeartbeatProfile 留空 = 心跳禁用 = 主程序零网络依赖）：
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<Config>
+  <UpdateServerPath>D:\FakeServer\AppUpdate</UpdateServerPath>
+</Config>
+```
+
+- [ ] **Step 4: 验证环境可用**
+
+Run: `D:\AppTest\Launcher.exe`
+Expected: 状态栏显示"已是最新版本 (1.0.5)，正在启动..."，随后主程序 MoveImageForm 正常打开，无"无法连接云端"提示、无异常。
+
+- [ ] **Step 5: 复制出三机演练用的 B、C 目录**
+
+```bash
+cp -r D:/AppTest D:/AppTest-B
+cp -r D:/AppTest D:/AppTest-C
+```
+
+删除 `D:\AppTest-B\config.xml`、`D:\AppTest-C\config.xml` 中已有的 `<MachineId>` 节点（若 Task 2 完成前尚无此节点则跳过此步）—— 三台"机器"首次启动各自生成不同机器ID。
 
 ---
 
@@ -689,16 +781,18 @@ namespace MoveImageForm.Services
 Run: `msbuild MoveImageForm\MoveImageForm.csproj /p:Configuration=Release /v:m`
 Expected: `Build succeeded`。若缺 `using System.Reflection;` 编译报错，在文件头部 using 区补上。
 
-- [ ] **Step 5: 手工验证心跳**
+- [ ] **Step 5: 离线逻辑验证（真实传输联调推迟到上内网后）**
 
-1. 在测试 SFTP 服务器上建心跳账号（或复用现有测试账号）
-2. 客户机 `config.xml` 的 `<Config>` 根下添加（密码可先填明文，程序自动兼容）：
+> 无内网期间跳过真实 SFTP/S3 联调（已确认，不部署本机 OpenSSH/MinIO）。此步骤只验证心跳的"安全逻辑"：禁用路径 + 失败静默 + grayStatus 读取。
+
+1. **禁用路径**：Task 0 的 `D:\AppTest\config.xml` 不配置 HeartbeatProfile → 启动主程序 → 正常打开、无异常、无网络请求（IsEnabled=false）
+2. **失败静默路径**：`D:\AppTest\config.xml` 的 `<Config>` 根下添加（指向本机必然不可达的地址；密码可填明文，程序自动兼容）：
 
 ```xml
   <HeartbeatProfile>
     <Name>心跳上报</Name>
     <TransportType>SFTP</TransportType>
-    <Host>测试SFTP服务器IP</Host>
+    <Host>127.0.0.1</Host>
     <Port>22</Port>
     <Username>heartbeat-user</Username>
     <Password>明文密码</Password>
@@ -707,8 +801,9 @@ Expected: `Build succeeded`。若缺 `using System.Reflection;` 编译报错，�
   <HeartbeatIntervalHours>24</HeartbeatIntervalHours>
 ```
 
-3. 启动主程序 → 等待数秒 → 远程 SFTP `heartbeat\<机器ID>.json` 应出现，内容含 hostname/version/grayStatus（Launcher 未写 gray.state 时为 unknown，属正常）
-4. 不配置 HeartbeatProfile 启动 → 无任何异常、无网络请求（IsEnabled=false）
+3. 重启主程序 → 本机 22 端口无监听 → 连接必然失败 → 确认主程序**无任何异常、继续正常运行**（catch-all 静默验证；此路径同时验证 grayStatus 读取：Launcher 已写 gray.state 时取到实际值，否则 unknown）
+4. 恢复 config.xml（删除 HeartbeatProfile）→ 回到禁用状态
+5. 真实传输联调（上传 `heartbeat\<机器ID>.json` 到测试 SFTP/S3 + heartbeat-summary.ps1 观察）列入**上内网后验收清单**（见附）
 
 - [ ] **Step 6: 提交**
 
@@ -867,29 +962,46 @@ git commit -m "docs: 灰度发布/回滚操作说明 + 心跳配置说明 + 运�
 Run: `powershell -ExecutionPolicy Bypass -File tools\gray-policy-tests.ps1`
 Expected: 全部 PASS，`结果: N 通过, 0 失败`。
 
-- [ ] **Step 2: 三机灰度模拟**
+- [ ] **Step 2: 三机灰度模拟（离线环境，Task 0 已搭建）**
 
-准备 3 台测试机（或 3 个测试目录），各自生成不同机器ID：
-1. 机器A：把其机器ID 加入 `allowlist`
-2. 机器B：percent 设为 33（约 1/3 中签），若未中签则换一台或直接放进 allowlist 模拟中签
-3. 机器C：把其机器ID 加入 `blocklist`
+使用 Task 0 的 `D:\AppTest\`、`D:\AppTest-B\`、`D:\AppTest-C\` 三个模拟客户机目录 + 模拟服务器 `D:\FakeServer\AppUpdate\`：
 
-version.json 配置 `gray: {target:"<测试版本>", percent:33, allowlist:[A], blocklist:[C]}`。
-Expected：
-- A、B 启动 → 弹"发现新版本"面板
-- C 启动 → 无面板，状态显示"灰度更新未开放给本机"，根目录生成 `gray.state` 内容 `blocked <版本>`
-- 已升级的机器再次启动 → 不再提示
+1. 各目录先启动一次 Launcher（让机器ID 生成），读取各目录 `config.xml` 的 `<MachineId>`，记为 A、B、C
+2. 把**测试版本**（如 1.0.6）的版本文件夹放入模拟服务器 `D:\FakeServer\AppUpdate\versions\1.0.6\`（从 `MoveImageForm\bin\Release\` 复制）
+3. 模拟服务器 `version.json` 配置灰度：机器A 加入 `allowlist`，机器C 加入 `blocklist`，percent 33：
+
+```json
+{
+    "latest": "1.0.5",
+    "versions": {
+        "1.0.5": { "date": "2026-08-01", "note": "离线模拟用稳定版" },
+        "1.0.6": { "date": "2026-08-14", "note": "灰度测试版" }
+    },
+    "gray": {
+        "target": "1.0.6",
+        "percent": 33,
+        "allowlist": ["<机器A的ID>"],
+        "blocklist": ["<机器C的ID>"]
+    }
+}
+```
+
+4. 依次启动三个 Launcher：
+   - A、B 启动 → 弹"发现新版本 1.0.6"面板（A 因白名单、B 因 percent 中签或补进 allowlist）
+   - C 启动 → 无面板，状态显示"灰度更新未开放给本机"，根目录生成 `gray.state` 内容 `blocked 1.0.6`
+   - 已升级的机器再次启动 → 不再提示，`gray.state` 为 `taken 1.0.6`
+5. 注意验证 `latest` 仍为 1.0.5 时旧逻辑不被触发（灰度未中签机器全部静默）
 
 - [ ] **Step 3: 灰度推进与全量**
 
 1. percent 提到 100 → 剩余机器启动时均提示
-2. `latest` 改为 target、删除 gray 字段 → 全部机器启动时走普通更新提示，`gray.state` 变回 `stable`
-3. 全程在测试 SFTP 上用 `tools\heartbeat-summary.ps1` 观察各版本机器数逐步变化
+2. `latest` 改为 1.0.6、删除 gray 字段 → 全部机器启动时走普通更新提示，`gray.state` 变回 `stable`
+3. **离线替代心跳观察**：全程检查各客户机根目录 `gray.state` 内容与版本目录变化（灰度进度 = 各目录 `versions\` 下实际版本）；真实心跳进度观察（heartbeat-summary.ps1）列入上内网后验收
 
-- [ ] **Step 4: 回滚演练**
+- [ ] **Step 4: 回滚演练（在模拟服务器 `D:\FakeServer\AppUpdate\version.json` 上操作）**
 
-1. 灰度期发现问题：删除 gray 字段 → 未升级机器不再提示（确认 C 等机器静默）
-2. 人工回滚已升级机器：删除 `versions\<灰度版本>\`，从 `versions\backup\<版本>.bak` 恢复（按现有 update.bat 备份结构），启动确认回到旧版
+1. 灰度期发现问题：删除 gray 字段（或 percent=0）→ 未升级机器不再提示（确认 C 等机器静默启动）
+2. 人工回滚已升级机器：删除 `D:\AppTest\versions\<灰度版本>\`，从 `D:\AppTest\versions\backup\<版本>.bak` 恢复（按现有 update.bat 备份结构），启动确认回到旧版
 
 - [ ] **Step 5: Bootstrap 发布打包**
 
@@ -897,7 +1009,7 @@ Expected：
 1. 编译 Release 两个项目
 2. 新建 `Deploy-Server\versions\1.0.6\`，放入 `Launcher.exe`、`MoveImageForm.exe` 及全部 DLL（从 `Launcher\bin\Release\` 与 `MoveImageForm\bin\Release\` 复制，与既有版本目录结构一致）
 3. `version.json` 增加 1.0.6 条目、`latest` 改 1.0.6（**不加 gray 字段**——这就是 Bootstrap 全量发布）
-4. 全量推送到所有机器 → 确认全部升级到 1.0.6 且功能正常（含心跳默认禁用）
+4. 打包产物提交后，推送到真实服务器 + 确认全部机器升级到 1.0.6 且功能正常（含心跳默认禁用）为**上内网后验收项**（见附）
 5. 之后 1.0.7 起即可按 Task 5 文档执行灰度发布
 
 - [ ] **Step 6: 提交打包产物**
@@ -923,3 +1035,14 @@ git commit -m "release: 1.0.6 Bootstrap 全量发布（含灰度能力，灰度�
 | 向后兼容（无 gray 字段行为不变） | 手工回归清单 | Task 2 Step 6 |
 | 已升级机器不重复提示 | 三机演练 | Task 6 |
 | 回滚（停发+人工恢复） | 回滚演练 | Task 6 |
+| 无内网环境完整演练 | 本地目录模拟 SMB 服务器（纯文件 IO 依据）跑通灰度/推进/全量/回滚 | Task 0 / Task 6 |
+
+## 附：上内网后验收清单（无内网期间推迟项）
+
+| 项目 | 验证内容 |
+|---|---|
+| 心跳真实传输 | 配置 HeartbeatProfile 指向真实测试 SFTP/S3 → 远程出现 `heartbeat\<机器ID>.json`，内容含 hostname/version/grayStatus |
+| 心跳周期上报 | 24h 后再次上报（或临时调小 HeartbeatIntervalHours 验证 Timer 触发） |
+| heartbeat-summary.ps1 | 对真实心跳目录跑汇总脚本，版本/灰度状态/未上报统计正确 |
+| 真实 SMB 更新 | UpdateServerPath 指向真实共享，走一次普通更新（SMB 只读账号环境） |
+| 灰度上线演练 | 在真实环境按 Task 5 文档执行一次灰度发布 → 推进 → 全量（或回滚） |
