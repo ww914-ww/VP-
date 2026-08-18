@@ -181,14 +181,14 @@ namespace MoveImageForm.Services
             }
         }
 
-        /// <summary>用缓存的密码重新连接指定 Profile（内存无缓存时回退到 config 保存的密码）</summary>
+        /// <summary>用缓存的密码重新连接指定 Profile。失败时保留凭据以便再次重试；内存无缓存时回退到 config 保存的密码</summary>
         public bool Reconnect(string profileName)
         {
             _sessionPasswords.TryGetValue(profileName, out var password);
             if (!_sessionProfiles.TryGetValue(profileName, out var profile))
                 return false;
 
-            // v1.0.3+：内存无缓存密码时（如启动时自动登录失败过的账号），
+            // 内存无缓存密码时（如启动时自动登录失败过的账号），
             // 回退使用 config 中 DPAPI 保存的密码，保证断线重连不需要重新输入
             if (string.IsNullOrEmpty(password))
             {
@@ -198,10 +198,21 @@ namespace MoveImageForm.Services
             if (string.IsNullOrEmpty(password))
                 return false;
 
+            // 只释放旧连接，先不清凭据，避免 Connect 失败后无法再次重连
+            if (_sessions.TryGetValue(profileName, out var old))
+            {
+                try { old.Dispose(); } catch { }
+                _sessions.Remove(profileName);
+            }
+
             try
             {
-                DisconnectProfile(profileName);
-                Login(profile, password);
+                var transport = CreateTransport(profile, password);
+                transport.Connect();
+                _sessions[profile.Name] = transport;
+                _sessionProfiles[profile.Name] = profile;
+                _sessionPasswords[profile.Name] = password;
+                LoginStateChanged?.Invoke();
                 return true;
             }
             catch

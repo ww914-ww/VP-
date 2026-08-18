@@ -43,9 +43,11 @@
                         <Border x:Name="borderTransferStatus" Grid.Row="0" Background="#E8F4E8"
                                 BorderBrush="#90D090" BorderThickness="1" CornerRadius="4"
                                 Padding="10,6" Margin="0,0,0,10" Visibility="Collapsed">
-                            <StackPanel Orientation="Horizontal">
+                            <StackPanel>
                                 <TextBlock x:Name="txtTransferStatus" FontSize="12" Foreground="#006600"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="txtMoveActivity" FontSize="12" Foreground="#335533"
+                                           Margin="0,4,0,0" Visibility="Collapsed" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 

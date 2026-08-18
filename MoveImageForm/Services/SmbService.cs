@@ -42,21 +42,26 @@ namespace MoveImageForm.Services
             return Path.GetFullPath(combined);
         }
 
-        public bool UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
+        public TransferUploadResult UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
         {
-            if (!File.Exists(localPath)) return false;
-            string destPath = ResolvePath(remoteRelativePath);
-            EnsureDirectoryExists(Path.GetDirectoryName(destPath));
-
-            if (appendOnly)
+            try
             {
-                // 追加模式：目标已存在则跳过（与 SFTP/S3 行为一致，仅检查存在性）
-                if (File.Exists(destPath))
-                    return false; // skipped — already exists
-            }
+                if (!File.Exists(localPath))
+                    return TransferUploadResult.Fail("本地文件不存在");
 
-            File.Copy(localPath, destPath, true);
-            return true;
+                string destPath = ResolvePath(remoteRelativePath);
+                EnsureDirectoryExists(Path.GetDirectoryName(destPath));
+
+                if (appendOnly && File.Exists(destPath))
+                    return TransferUploadResult.Skip("远端已存在(追加模式)");
+
+                File.Copy(localPath, destPath, true);
+                return TransferUploadResult.Ok();
+            }
+            catch (Exception ex)
+            {
+                return TransferUploadResult.Fail(ex.Message);
+            }
         }
 
         public bool FileExists(string remoteRelativePath)

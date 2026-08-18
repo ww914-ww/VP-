@@ -76,4 +76,13 @@
     <Resource Include="Resources\AppLogo.ico" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- 编译完成后自动输出到仓库统一目录，避免到 bin\Debug / bin\Release 多处查找 -->
+  <Target Name="CopyToOutBin" AfterTargets="Build">
+    <PropertyGroup>
+      <OutBinDir>$(MSBuildThisFileDirectory)..\out-bin\</OutBinDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutBinDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(OutBinDir)" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="已输出到: $(OutBinDir)$(TargetFileName)" />
+  </Target>
 </Project>
