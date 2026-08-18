@@ -44,12 +44,6 @@ namespace MoveImageForm
         private System.Windows.Threading.DispatcherTimer _countdownTimer;
         private bool _isInitializingProcessMonitoring;
 
-        // 版本更新
-        private System.Windows.Threading.DispatcherTimer _updateTimer;
-        private string _latestCloudVersion;
-        private string _latestCloudDate;
-        private string _latestCloudNote;
-
         private bool _isLoadingConfig;
 
         public MainWindow()
@@ -251,8 +245,6 @@ namespace MoveImageForm
                     entry.TransferMode = "Append";
             }
             if (forced == "None") btnStart.IsEnabled = false;
-
-            btnCheckUpdate.IsEnabled = true; // SMB 更新无需登录
         }
 
         private void UpdateTransferStatusBar()
@@ -354,14 +346,21 @@ namespace MoveImageForm
             LoadConfig();
             UpdateUIFromConfig();
 
-            // 自动登录：尝试用已保存的密码连接活跃账号
+            // v1.0.3+：开机自启动写死启用（无界面选项，每次启动确保注册表 Run 键存在）
+            EnsureAutoStart();
+
+            // 自动登录：用已保存的密码连接活跃账号，成功后自动开始搬运
+            // （开机自启动 = 启动软件 + 登录账号 + 开始搬运）
             TryAutoLogin();
 
             InitProcessMonitoring();
-            InitVersionUpdate();
         }
 
-        /// <summary>尝试用已保存的（DPAPI 加密）密码自动登录（后台，不阻塞 UI）</summary>
+        /// <summary>
+        /// 自动登录：用已保存的（DPAPI 加密）密码连接活跃账号（后台，不阻塞 UI）。
+        /// v1.0.3+：开机时网络可能未就绪，最多重试 10 次（每 30 秒一次，约 5 分钟）；
+        /// 登录成功后自动开始搬运（开机自启动 = 启动软件 + 登录账号 + 开始搬运）。
+        /// </summary>
         private async void TryAutoLogin()
         {
             var activeProfiles = new List<SftpProfile>();
@@ -1478,352 +1477,16 @@ namespace MoveImageForm
 
         #endregion
 
-        #region Tab 3 — Version Update (SMB)
+        #region Tab 3 — 开机自启动（v1.0.3+：写死启用，无界面选项）
 
-        private void InitVersionUpdate()
-        {
-            var asm = System.Reflection.Assembly.GetExecutingAssembly();
-            var ver = asm.GetName().Version;
-            txtLocalVersion.Text = $"{ver.Major}.{ver.Minor}.{ver.Build}";
-
-            if (!string.IsNullOrWhiteSpace(_config.LastCheckTime))
-                txtLastCheckTime.Text = $"上次检查时间: {_config.LastCheckTime} | 检查间隔: {_config.CheckIntervalMinutes} 分钟";
-
-            chkAutoStart.IsChecked = _config.AutoStart;
-
-            chkAutoCheck.IsChecked = _config.CheckIntervalMinutes > 0;
-            if (_config.CheckIntervalMinutes > 0)
-            {
-                chkAutoCheck.Content = $"启用定时检查（每{_config.CheckIntervalMinutes}分钟）";
-                _updateTimer = new System.Windows.Threading.DispatcherTimer();
-                _updateTimer.Interval = TimeSpan.FromMinutes(_config.CheckIntervalMinutes);
-                _updateTimer.Tick += (s, ev) => CheckForUpdate();
-                _updateTimer.Start();
-            }
-
-            if (!string.IsNullOrWhiteSpace(_config.UpdateServerPath))
-                Task.Run(() => CheckForUpdate());
-        }
-
-        private async void BtnCheckUpdate_Click(object sender, RoutedEventArgs e)
-        {
-            btnCheckUpdate.IsEnabled = false;
-            btnCheckUpdate.Content = "检查中...";
-            await Task.Run(() => CheckForUpdate());
-            btnCheckUpdate.IsEnabled = true;
-            btnCheckUpdate.Content = "立即检查";
-        }
-
-        private void CheckForUpdate()
+        /// <summary>开机自启动：注册表 Run 键写入（优先 Launcher.exe，找不到时用自身），每次启动确保存在</summary>
+        private void EnsureAutoStart()
         {
             try
             {
-                string updatePath = _config.UpdateServerPath?.Trim();
-                if (string.IsNullOrEmpty(updatePath))
-                {
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        txtCloudVersion.Text = "未配置";
-                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (未配置更新服务器)";
-                    });
-                    return;
-                }
-
-                string versionFile = Path.Combine(updatePath, "version.json");
-                if (!File.Exists(versionFile))
-                {
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        txtCloudVersion.Text = "不可达";
-                        txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (云端不可达)";
-                    });
-                    _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                    SaveConfig();
-                    return;
-                }
-
-                string jsonText = File.ReadAllText(versionFile);
-                var jss = new System.Web.Script.Serialization.JavaScriptSerializer();
-                var data = jss.Deserialize<dynamic>(jsonText);
-                string latestVersion = data["latest"]?.ToString() ?? "";
-
-                var versions = data["versions"] as Dictionary<string, object>;
-                string cloudDate = "";
-                string cloudNote = "";
-                if (versions != null && versions.ContainsKey(latestVersion))
-                {
-                    var verInfo = versions[latestVersion] as Dictionary<string, object>;
-                    if (verInfo != null)
-                    {
-                        cloudDate = verInfo.ContainsKey("date") ? verInfo["date"]?.ToString() ?? "" : "";
-                        cloudNote = verInfo.ContainsKey("note") ? verInfo["note"]?.ToString() ?? "" : "";
-                    }
-                }
-
-                _latestCloudVersion = latestVersion;
-                _latestCloudDate = cloudDate;
-                _latestCloudNote = cloudNote;
-
-                var localVer = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version;
-                string localVerStr = $"{localVer.Major}.{localVer.Minor}.{localVer.Build}";
-
-                _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                SaveConfig();
-
-                Dispatcher.InvokeAsync(() =>
-                {
-                    txtCloudVersion.Text = latestVersion;
-                    txtLastCheckTime.Text = $"上次检查时间: {_config.LastCheckTime} | 检查间隔: {_config.CheckIntervalMinutes} 分钟";
-
-                    if (!string.IsNullOrWhiteSpace(latestVersion) && IsNewerVersion(latestVersion, localVerStr))
-                    {
-                        txtNewVersionInfo.Text = $"发现新版本 {latestVersion}{(string.IsNullOrWhiteSpace(cloudDate) ? "" : $" ({cloudDate})")}\n{cloudNote}";
-                        borderNewVersion.Visibility = Visibility.Visible;
-                        Log($"发现新版本: {latestVersion}");
-                        ShowUpdateDialog(latestVersion, cloudDate, cloudNote);
-                    }
-                    else
-                    {
-                        borderNewVersion.Visibility = Visibility.Collapsed;
-                        Log($"版本检查: 已是最新版本 (本地 {localVerStr}, 云端 {latestVersion})");
-                    }
-                });
-            }
-            catch (Exception ex)
-            {
-                Dispatcher.InvokeAsync(() =>
-                {
-                    Log($"版本检查失败: {ex.Message}");
-                    txtLastCheckTime.Text = $"上次检查时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss} (检查失败)";
-                });
-                _config.LastCheckTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
-                SaveConfig();
-            }
-        }
-
-        private bool IsNewerVersion(string cloudVer, string localVer)
-        {
-            try
-            {
-                var cv = new Version(cloudVer);
-                var lv = new Version(localVer);
-                return cv > lv;
-            }
-            catch
-            {
-                return string.Compare(cloudVer, localVer, StringComparison.OrdinalIgnoreCase) > 0;
-            }
-        }
-
-        private void ShowUpdateDialog(string version, string date, string note)
-        {
-            string msg = $"发现新版本 {version}";
-            if (!string.IsNullOrWhiteSpace(date))
-                msg += $"\n更新日期: {date}";
-            if (!string.IsNullOrWhiteSpace(note))
-                msg += $"\n\n{note}";
-            msg += "\n\n是否立即更新？（将下载更新并重启程序）";
-
-            var result = MessageBox.Show(msg, "发现新版本",
-                MessageBoxButton.YesNo, MessageBoxImage.Information);
-
-            if (result == MessageBoxResult.Yes)
-                StartUpdateDownload(version);
-        }
-
-        private async void StartUpdateDownload(string version)
-        {
-            Log($"开始下载更新 {version}...");
-            btnCheckUpdate.IsEnabled = false;
-
-            await Task.Run(() =>
-            {
-                try
-                {
-                    string updatePath = _config.UpdateServerPath?.Trim();
-                    if (string.IsNullOrEmpty(updatePath))
-                    {
-                        Dispatcher.InvokeAsync(() => Log("更新下载失败: 未配置更新服务器"));
-                        return;
-                    }
-
-                    string baseDir = Path.GetDirectoryName(
-                        System.Reflection.Assembly.GetExecutingAssembly().Location);
-                    string appRoot = Path.GetFullPath(Path.Combine(baseDir, "..", ".."));
-                    string tempDir = Path.Combine(appRoot, "versions", ".temp");
-
-                    if (Directory.Exists(tempDir))
-                        Directory.Delete(tempDir, true);
-                    Directory.CreateDirectory(tempDir);
-
-                    string remoteVerDir = Path.Combine(updatePath, version);
-                    if (!Directory.Exists(remoteVerDir) ||
-                        !File.Exists(Path.Combine(remoteVerDir, "MoveImageForm.exe")))
-                    {
-                        Dispatcher.InvokeAsync(() =>
-                            Log("更新下载失败: 云端版本文件不完整"));
-                        return;
-                    }
-
-                    // 从 SMB 共享复制文件
-                    CopyDirectoryRecursive(remoteVerDir, tempDir);
-
-                    if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
-                    {
-                        Dispatcher.InvokeAsync(() =>
-                            Log("更新下载失败: 下载后文件不完整"));
-                        return;
-                    }
-
-                    // 写入 ready 状态，即使 bat 执行失败，Launcher 重启后也能重试安装
-                    string statusPath = Path.Combine(appRoot, "update.status");
-                    File.WriteAllText(statusPath, "ready", new UTF8Encoding(false));
-
-                    string batPath = Path.Combine(appRoot, "update.bat");
-                    string batContent = GenerateUpdateBat(appRoot, version);
-                    // 使用系统默认编码（中文 Windows 为 GBK），避免 cmd.exe 解析中文路径乱码
-                    File.WriteAllText(batPath, batContent, new UTF8Encoding(false));
-
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        Log("更新已下载，即将退出并执行更新...");
-                        var timer = new System.Windows.Threading.DispatcherTimer();
-                        timer.Interval = TimeSpan.FromSeconds(1);
-                        timer.Tick += (s, args) =>
-                        {
-                            timer.Stop();
-                            Process.Start(new ProcessStartInfo(batPath)
-                            {
-                                UseShellExecute = true,
-                                CreateNoWindow = false,
-                                WorkingDirectory = appRoot
-                            });
-                            _notifyIcon.Visible = false;
-                            _notifyIcon.Dispose();
-                            Application.Current.Shutdown();
-                        };
-                        timer.Start();
-                    });
-                }
-                catch (Exception ex)
-                {
-                    Dispatcher.InvokeAsync(() =>
-                        Log($"更新下载失败: {ex.Message}"));
-                }
-            });
-        }
-
-        private static void CopyDirectoryRecursive(string sourceDir, string destDir)
-        {
-            if (!Directory.Exists(destDir))
-                Directory.CreateDirectory(destDir);
-
-            foreach (var file in Directory.GetFiles(sourceDir))
-            {
-                string destFile = Path.Combine(destDir, Path.GetFileName(file));
-                File.Copy(file, destFile, true);
-            }
-
-            foreach (var dir in Directory.GetDirectories(sourceDir))
-            {
-                string destSubDir = Path.Combine(destDir, Path.GetFileName(dir));
-                CopyDirectoryRecursive(dir, destSubDir);
-            }
-        }
-
-        private string GenerateUpdateBat(string appRoot, string version)
-        {
-            string versionsDir = Path.Combine(appRoot, "versions");
-            string newVerDir = Path.Combine(versionsDir, version);
-            string tempDir = Path.Combine(versionsDir, ".temp");
-            string backupDir = Path.Combine(appRoot, "backup");
-            string launcherPath = Path.Combine(appRoot, "Launcher.exe");
-
-            return $@"@echo off
-echo Updating VP Tool to version {version}...
-echo.
-echo Do not close this window. The program will restart automatically...
-echo.
-
-timeout /t 2 /nobreak >nul
-
-taskkill /f /im MoveImageForm.exe >nul 2>&1
-taskkill /f /im Launcher.exe >nul 2>&1
-
-if exist ""{newVerDir}"" (
-    if not exist ""{backupDir}"" mkdir ""{backupDir}""
-    robocopy ""{newVerDir}"" ""{backupDir}\{version}.bak"" /E /MOVE /R:2 /W:2 >nul 2>&1
-    if errorlevel 8 goto :update_error
-)
-
-robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE /R:2 /W:2 >nul 2>&1
-if errorlevel 8 goto :update_error
-
-rd /s /q ""{tempDir}"" 2>nul
-
-if exist ""{newVerDir}\Launcher.exe"" (
-    echo Updating Launcher...
-    copy /Y ""{newVerDir}\Launcher.exe"" ""{launcherPath}"" >nul 2>&1
-    if errorlevel 1 goto :update_error
-)
-
-echo idle> ""{Path.Combine(appRoot, "update.status")}""
-
-if exist ""{launcherPath}"" (
-    start """" ""{launcherPath}""
-) else (
-    start """" ""{Path.Combine(newVerDir, "MoveImageForm.exe")}""
-)
-
-del ""%~f0"" & exit
-
-:update_error
-echo Update failed. Please retry or contact administrator.
-echo Error: file copy failed, files remain in temp directory.
-echo.
-pause
-exit /b 1
-";
-        }
-
-
-        private void ChkAutoCheck_Changed(object sender, RoutedEventArgs e)
-        {
-            if (chkAutoCheck.IsChecked == true)
-            {
-                _config.CheckIntervalMinutes = 30;
-                if (_updateTimer == null)
-                {
-                    _updateTimer = new System.Windows.Threading.DispatcherTimer();
-                    _updateTimer.Interval = TimeSpan.FromMinutes(_config.CheckIntervalMinutes);
-                    _updateTimer.Tick += (s, ev) => CheckForUpdate();
-                }
-                _updateTimer.Start();
-                chkAutoCheck.Content = $"启用定时检查（每{_config.CheckIntervalMinutes}分钟）";
-                Log("已启用定时版本检查（每30分钟）");
-            }
-            else
-            {
-                _config.CheckIntervalMinutes = 0;
-                _updateTimer?.Stop();
-                chkAutoCheck.Content = "启用定时检查（每30分钟）";
-                Log("已关闭定时版本检查");
-            }
-            SaveConfig();
-        }
-
-        private void ChkAutoStart_Changed(object sender, RoutedEventArgs e)
-        {
-            _config.AutoStart = chkAutoStart.IsChecked == true;
-            SetAutoStart(_config.AutoStart);
-            SaveConfig();
-        }
-
-        private void SetAutoStart(bool enable)
-        {
-            try
-            {
-                string appName = "VP运维工具";
+                // 值名用独立名称：联想等启动管理器已把旧名"VP运维工具"记为"已禁用"并在开机时强制覆盖，
+                // 换名可绕开该历史决定（此类工具默认不会自动禁用未知的新启动项）
+                string appName = "VP运维工具自启";
                 string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
                 string launcherPath = Path.Combine(
                     Path.GetDirectoryName(exePath), "..", "..", "Launcher.exe");
@@ -1831,23 +1494,34 @@ exit /b 1
 
                 var regKey = Registry.CurrentUser.OpenSubKey(
                     @"Software\Microsoft\Windows\CurrentVersion\Run", true);
+                if (regKey == null) return;
 
-                if (enable)
+                // 联想电脑管家等工具会把"已禁用"的启动项移入 Run\LenovoDisabled（值数据以 rem| 开头），
+                // 并在每次开机时强制维持禁用状态。本软件写死开机自启，需先清除这条禁用记录，否则写回会被再次移除
+                try
                 {
-                    if (regKey != null)
+                    foreach (var subName in regKey.GetSubKeyNames())
                     {
-                        if (File.Exists(autoStartPath))
-                            regKey.SetValue(appName, $"\"{autoStartPath}\"");
-                        else
-                            regKey.SetValue(appName, $"\"{exePath}\"");
+                        if (!subName.EndsWith("Disabled", StringComparison.OrdinalIgnoreCase))
+                            continue;
+                        using (var subKey = regKey.OpenSubKey(subName, true))
+                        {
+                            subKey?.DeleteValue(appName, false);
+                        }
                     }
-                    Log("已设置开机自启动");
                 }
-                else
-                {
-                    regKey?.DeleteValue(appName, false);
-                    Log("已取消开机自启动");
-                }
+                catch { /* 清理失败不阻断主流程 */ }
+
+                string targetValue = File.Exists(autoStartPath)
+                    ? $"\"{autoStartPath}\""
+                    : $"\"{exePath}\"";
+
+                // 已设置相同的值则跳过，避免每次启动重复写入/刷日志
+                if (regKey.GetValue(appName) as string == targetValue)
+                    return;
+
+                regKey.SetValue(appName, targetValue);
+                Log("已设置开机自启动（默认开启）");
             }
             catch (Exception ex)
             {
