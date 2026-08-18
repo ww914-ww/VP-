@@ -33,8 +33,12 @@ namespace MoveImageForm.Views
             txtHost.Text = existing.Host;
             txtPort.Text = existing.Port.ToString();
             txtUsername.Text = existing.Username;
-            // 密码保持 DPAPI 加密状态，编辑时不预填（安全考虑）
-            // 如果用户要改密码才填，否则留空 = 保持不变
+            // 解密并预填密码（以 PasswordBox 默认 ● 掩码展示，用户可直接修改）
+            if (!string.IsNullOrEmpty(existing.Password))
+            {
+                try { txtPassword.Password = existing.GetPlainPassword(); }
+                catch { /* 解密失败，留空 */ }
+            }
             txtRemoteRoot.Text = existing.RemoteRoot;
 
             // 根据 TransportType 设置选中
@@ -143,6 +147,8 @@ namespace MoveImageForm.Views
                 txtUsername.Visibility = Visibility.Collapsed;
                 lblPassword.Visibility = Visibility.Collapsed;
                 txtPassword.Visibility = Visibility.Collapsed;
+                txtPasswordVisible.Visibility = Visibility.Collapsed;
+                chkShowPassword.Visibility = Visibility.Collapsed;
                 lblRole.Visibility = Visibility.Collapsed;
                 spRole.Visibility = Visibility.Collapsed;
                 lblRemoteRoot.Text = "目标文件夹:";
@@ -157,6 +163,7 @@ namespace MoveImageForm.Views
             txtUsername.Visibility = Visibility.Visible;
             lblPassword.Visibility = Visibility.Visible;
             txtPassword.Visibility = Visibility.Visible;
+            chkShowPassword.Visibility = Visibility.Visible;
             lblRole.Visibility = Visibility.Visible;
             spRole.Visibility = Visibility.Visible;
 
@@ -178,7 +185,9 @@ namespace MoveImageForm.Views
         {
             string name = txtName.Text?.Trim();
             string username = txtUsername.Text?.Trim();
-            string password = txtPassword.Password;
+            string password = chkShowPassword.IsChecked == true
+                ? txtPasswordVisible.Text
+                : txtPassword.Password;
             string remoteRoot = txtRemoteRoot.Text?.Trim();
             string host = txtHost.Text?.Trim();
 
@@ -271,9 +280,8 @@ namespace MoveImageForm.Views
                 _existingProfile.Username = username;
                 _existingProfile.RemoteRoot = remoteRoot;
                 _existingProfile.Role = role;
-                // 只有用户输入了新密码才更新
-                if (!string.IsNullOrEmpty(password))
-                    _existingProfile.Password = password;
+                // v1.0.3+：密码框留空 = 清除该账号密码（清除后不再自动登录，下次登录需手动输入）
+                _existingProfile.Password = password;
                 Profile = _existingProfile;
             }
             else
@@ -304,6 +312,22 @@ namespace MoveImageForm.Views
         {
             DialogResult = false;
             Close();
+        }
+
+        private void ChkShowPassword_Changed(object sender, RoutedEventArgs e)
+        {
+            if (chkShowPassword.IsChecked == true)
+            {
+                txtPasswordVisible.Text = txtPassword.Password;
+                txtPassword.Visibility = Visibility.Collapsed;
+                txtPasswordVisible.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                txtPassword.Password = txtPasswordVisible.Text;
+                txtPasswordVisible.Visibility = Visibility.Collapsed;
+                txtPassword.Visibility = Visibility.Visible;
+            }
         }
     }
 }

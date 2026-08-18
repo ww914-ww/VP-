@@ -20,6 +20,14 @@ namespace MoveImageForm.Views
             {
                 cmbAccount.SelectedIndex = 0;
                 UpdatePasswordLabel();
+
+                // v1.0.3+：预填已保存的密码（掩码显示），登录无需重新输入。
+                // 必须放在 UpdatePasswordLabel() 之后，否则会被其清空。
+                try
+                {
+                    txtPassword.Password = profiles[0].GetPlainPassword();
+                }
+                catch { /* 解密失败，保持为空 */ }
             }
             cmbAccount.SelectionChanged += (s, e) => UpdatePasswordLabel();
         }

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.Diagnostics;
@@ -76,13 +76,7 @@ namespace MoveImageForm
                     StopMoving();
                 }
 
-                // 登出时清除保存的密码
-                if (_config != null && _config.SftpProfiles != null)
-                {
-                    foreach (var p in _config.SftpProfiles)
-                        p.Password = "";
-                }
-                SaveConfig();
+                // v1.0.3+：登出时保留已保存的密码，退出再登录/重启/断线重连无需重新输入
                 _session.Logout();
                 Log("[系统] 已登出");
                 return;
@@ -129,6 +123,27 @@ namespace MoveImageForm
                         Log($"[系统] SMB 连接失败: {ex.Message}");
                     }
                     continue;
+                }
+
+                // v1.0.3+：已保存密码的账号直接自动登录，无需再输密码；
+                // 密码已失效（服务器改密等）时自动回退到下方对话框重新输入
+                string savedPassword = "";
+                try { savedPassword = profile.GetPlainPassword(); }
+                catch { /* 解密失败，当作无保存密码 */ }
+
+                if (!string.IsNullOrEmpty(savedPassword))
+                {
+                    try
+                    {
+                        _session.Login(profile, savedPassword);
+                        connected++;
+                        Log($"[系统] 已连接: {profile.Name} → {profile.RemoteRoot}");
+                        continue;
+                    }
+                    catch
+                    {
+                        Log($"[系统] 保存的密码连接 {profile.Name} 失败，请重新输入密码");
+                    }
                 }
 
                 var dialog = new LoginDialog(new List<SftpProfile> { profile });
@@ -366,12 +381,30 @@ namespace MoveImageForm
                 return;
             }
 
-            Log($"[系统] 检测到 {activeProfiles.Count} 个已保存的账号，正在自动登录...");
-            int success = await Task.Run(() => _session.LoginAll(activeProfiles));
-            if (success > 0)
-                Log($"[系统] 自动登录成功: {success}/{activeProfiles.Count} 个账号。");
-            else
-                Log("自动登录失败，请点击「登录」手动连接。");
+            for (int attempt = 1; attempt <= 10; attempt++)
+            {
+                Log($"[系统] 自动登录（第 {attempt} 次，共 {activeProfiles.Count} 个账号）...");
+                int success = await Task.Run(() => _session.LoginAll(activeProfiles));
+                if (success > 0)
+                {
+                    Log($"[系统] 自动登录成功: {success}/{activeProfiles.Count} 个账号。");
+                    // 自动开始搬运（StartMoving 内部有 _isRunning 守卫和各项校验）
+                    Dispatcher.Invoke(() =>
+                    {
+                        if (!_isRunning)
+                            StartMoving();
+                    });
+                    return;
+                }
+
+                if (attempt < 10)
+                {
+                    Log("[系统] 自动登录失败（网络或服务器未就绪），30 秒后重试...");
+                    await Task.Delay(30_000);
+                }
+            }
+
+            Log("自动登录多次失败，请手动点击「登录」后开始搬运。");
         }
 
         private void Window_Closing(object sender, System.ComponentModel.CancelEventArgs e)
