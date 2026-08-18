@@ -181,12 +181,21 @@ namespace MoveImageForm.Services
             }
         }
 
-        /// <summary>用缓存的密码重新连接指定 Profile</summary>
+        /// <summary>用缓存的密码重新连接指定 Profile（内存无缓存时回退到 config 保存的密码）</summary>
         public bool Reconnect(string profileName)
         {
-            if (!_sessionPasswords.TryGetValue(profileName, out var password))
-                return false;
+            _sessionPasswords.TryGetValue(profileName, out var password);
             if (!_sessionProfiles.TryGetValue(profileName, out var profile))
+                return false;
+
+            // v1.0.3+：内存无缓存密码时（如启动时自动登录失败过的账号），
+            // 回退使用 config 中 DPAPI 保存的密码，保证断线重连不需要重新输入
+            if (string.IsNullOrEmpty(password))
+            {
+                try { password = profile.GetPlainPassword(); }
+                catch { return false; }
+            }
+            if (string.IsNullOrEmpty(password))
                 return false;
 
             try
@@ -199,6 +208,65 @@ namespace MoveImageForm.Services
             {
                 return false;
             }
+        }
+
+        /// <summary>用指定 Profile 重新连接（Profile 来自 config，即使启动时自动登录失败从未注册过会话也能重连）</summary>
+        public bool Reconnect(SftpProfile profile)
+        {
+            if (profile == null) return false;
+
+            string password = null;
+            _sessionPasswords.TryGetValue(profile.Name, out password);
+            // 内存无缓存密码时回退使用 config 中 DPAPI 保存的密码
+            if (string.IsNullOrEmpty(password))
+            {
+                try { password = profile.GetPlainPassword(); }
+                catch { return false; }
+            }
+            if (string.IsNullOrEmpty(password))
+                return false;
+
+            try
+            {
+                DisconnectProfile(profile.Name);
+                Login(profile, password);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// 带重试的自动重连：用缓存的密码重连，最多尝试 maxRetries 次，每次间隔 500ms。
+        /// 返回 true 表示重连成功，false 表示全部失败。
+        /// </summary>
+        public bool TryReconnectWithRetry(string profileName, int maxRetries = 3)
+        {
+            for (int i = 0; i < maxRetries; i++)
+            {
+                if (Reconnect(profileName))
+                    return true;
+
+                if (i < maxRetries - 1)
+                    System.Threading.Thread.Sleep(500);
+            }
+            return false;
+        }
+
+        /// <summary>带重试的自动重连（按 Profile，可重连从未注册过会话的账号）</summary>
+        public bool TryReconnectWithRetry(SftpProfile profile, int maxRetries = 3)
+        {
+            for (int i = 0; i < maxRetries; i++)
+            {
+                if (Reconnect(profile))
+                    return true;
+
+                if (i < maxRetries - 1)
+                    System.Threading.Thread.Sleep(500);
+            }
+            return false;
         }
     }
 }

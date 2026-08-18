@@ -34,6 +34,9 @@ namespace MoveImageForm
         // SFTP 会话管理
         private readonly SessionManager _session = new SessionManager();
 
+        // 断连重连节流：每个 Profile 上次重连尝试时间
+        private readonly Dictionary<string, DateTime> _lastReconnectAttempt = new Dictionary<string, DateTime>();
+
         // 进程监听
         private System.Windows.Threading.DispatcherTimer _processTimer;
         private ObservableCollection<ProcessViewModel> _processList;
@@ -187,6 +190,8 @@ namespace MoveImageForm
             if (_isRunning)
             {
                 btnLogin.IsEnabled = false;
+                // v1.0.3+ 兜底：搬运期间任何路径都不得点亮「开始搬运」
+                btnStart.IsEnabled = false;
                 btnLogin.Content = "⏳ 搬运中...";
                 btnLogin.ToolTip = "文件搬运进行中，请先停止搬运再登出";
                 spLoginStatus.Visibility = _session.IsLoggedIn ? Visibility.Visible : Visibility.Collapsed;
@@ -232,7 +237,9 @@ namespace MoveImageForm
             bool canUpload = RoleEnforcer.CanUpload(role);
             bool canChooseMode = RoleEnforcer.CanChooseTransferMode(role);
 
-            btnStart.IsEnabled = canUpload;
+            // v1.0.3+ 修复：搬运期间（_isRunning）必须保持「开始搬运」禁用，
+            // 否则搬运中重连成功触发 LoginStateChanged 会重新点亮该按钮
+            btnStart.IsEnabled = canUpload && !_isRunning;
 
             // 更新每个目录的传输模式下拉框权限
             SetSourceTransferModeComboBoxesEnabled(canChooseMode);
@@ -598,7 +605,12 @@ namespace MoveImageForm
             if (profile == null) return null;
 
             var session = _session.GetSession(profile.Name);
-            if (session != null && session.IsConnected) return session;
+            if (session != null && session.IsConnected)
+            {
+                // 连接正常，清除重连记录
+                _lastReconnectAttempt.Remove(profile.Name);
+                return session;
+            }
 
             // SMB 无需认证，按需直接创建新会话（不依赖密码缓存）
             if (profile.IsSmb)
@@ -609,10 +621,29 @@ namespace MoveImageForm
                 return smb;
             }
 
-            // SFTP/S3: 尝试用缓存的密码重连
-            if (_session.Reconnect(profile.Name))
-                return _session.GetSession(profile.Name);
+            // SFTP/S3: 断连重连，每隔 1 分钟尝试一次
+            string pn = profile.Name;
+            if (_lastReconnectAttempt.TryGetValue(pn, out var lastAttempt))
+            {
+                double secondsSince = (DateTime.Now - lastAttempt).TotalSeconds;
+                if (secondsSince < 60)
+                {
+                    // 距上次尝试不足 1 分钟，跳过
+                    return null;
+                }
+            }
 
+            _lastReconnectAttempt[pn] = DateTime.Now;
+            Log($"[重连] 正在尝试重连 {pn}...");
+            // 传 profile 而非名字：启动时自动登录失败（从未注册过会话）的账号也能用 config 保存的密码重连
+            if (_session.TryReconnectWithRetry(profile, maxRetries: 3))
+            {
+                Log($"[重连] {pn} 重连成功");
+                _lastReconnectAttempt.Remove(pn);
+                return _session.GetSession(pn);
+            }
+
+            Log($"[重连] {pn} 重连失败，将在 1 分钟后再次尝试");
             return null;
         }
 
@@ -756,14 +787,14 @@ namespace MoveImageForm
                                 if (timeTriggered || ShouldMoveFromSource(entry.Path, sftp))
                                 {
                                     if (timeTriggered) Log($"[{entry.Path}] 触发时间规则...");
-                                    await MoveFilesToSftpAsync(entry.Path, sftp, entry.TransferMode, token);
+                                    await MoveFilesToSftpAsync(entry, sftp, token);
                                     if (_config.EnableEmptyFolderRule) CleanEmptyFolders(entry.Path, _config.EmptyFolderHours, token);
                                     movedAny = true;
                                 }
                             }
                             else
                             {
-                                Log($"[{entry.Path}] 传输未连接 ({entry.ProfileName})，跳过");
+                                // 断连状态，跳过本轮，等待 GetOrReconnectSession 的 1 分钟重连节流
                             }
                         }
                     }
@@ -805,8 +836,12 @@ namespace MoveImageForm
             return false;
         }
 
-        private Task MoveFilesToSftpAsync(string source, IFileTransferService sftp, string transferMode, CancellationToken token)
+        private Task MoveFilesToSftpAsync(SourceFolderEntry entry, IFileTransferService sftp, CancellationToken token)
         {
+            string source = entry.Path;
+            string transferMode = entry.TransferMode;
+            string profileName = entry.ProfileName;
+
             // 根据角色权限和条目设置决定实际传输模式
             string role = _session.CurrentRole;
             string effectiveMode = RoleEnforcer.ForcedTransferMode(role) == "Append" ? "Append" : (transferMode ?? "Cut");
@@ -862,7 +897,16 @@ namespace MoveImageForm
                                 bytesTransferred += file.Length;
                                 if (isCut) { try { file.Delete(); } catch { } }
                             }
-                            else skip++;
+                            else
+                            {
+                                // 上传失败：检查是否因连接断开
+                                if (!sftp.IsConnected)
+                                {
+                                    Log($"[断连] 检测到账号连接断开 ({profileName})，本轮搬运中止，将在下次检测时自动重连");
+                                    return;
+                                }
+                                skip++;
+                            }
 
                             processed++;
 
@@ -880,6 +924,12 @@ namespace MoveImageForm
                         }
                         catch (Exception ex)
                         {
+                            // 异常也可能是连接断开导致
+                            if (!sftp.IsConnected)
+                            {
+                                Log($"[断连] 上传异常，检测到账号连接断开 ({profileName}): {ex.Message}，本轮搬运中止");
+                                return;
+                            }
                             fail++;
                             processed++;
                             Log($"上传 {file.Name} 失败: {ex.Message}");

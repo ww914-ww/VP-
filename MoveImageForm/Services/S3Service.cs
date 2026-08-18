@@ -354,8 +354,11 @@ namespace MoveImageForm.Services
                 long remoteSize = GetFileSize(remoteRelativePath);
                 DateTime remoteTime = GetLastWriteTime(remoteRelativePath);
 
-                return localInfo.Length == remoteSize
-                    && localInfo.LastWriteTime <= remoteTime;
+                // S3 Last-Modified 时间戳精度为秒级，NTFS 为 100纳秒，使用 2 秒容差防止截断导致误判
+                bool sameSize = localInfo.Length == remoteSize;
+                bool notNewer = localInfo.LastWriteTime <= remoteTime
+                    || Math.Abs((localInfo.LastWriteTime - remoteTime).TotalSeconds) < 2;
+                return sameSize && notNewer;
             }
             catch
             {
