@@ -1118,13 +1118,14 @@ namespace MoveImageForm
                     SetMoveActivity($"扫描 {source}");
                     Log($"[准备] {source} | 模式: {modeText} | 开始扫描本地目录...");
                     List<FileInfo> files = CollectSourceFiles(source, token, logProgress: true, out long totalBytes);
+                    files.Sort((a, b) => DateTime.Compare(b.LastWriteTime, a.LastWriteTime));
 
                     int totalFiles = files.Count;
                     int success = 0, skip = 0, fail = 0;
                     int skipSync = 0, skipExists = 0, skipOther = 0, deleteFail = 0;
                     int processed = 0;
 
-                    Log($"[开始] {source} | 模式: {modeText} | 共 {totalFiles} 个文件, {totalBytes / 1048576.0:F1} MB");
+                    Log($"[开始] {source} | 模式: {modeText} | 共 {totalFiles} 个文件, {totalBytes / 1048576.0:F1} MB | 按修改时间新→旧");
                     if (totalFiles == 0)
                         Log($"[开始] {source} | 本地无文件，本目录空跑结束");
 
