@@ -360,6 +360,9 @@ namespace MoveImageForm
 
         private void Window_Loaded(object sender, RoutedEventArgs e)
         {
+#if !DEBUG
+            Title = "VP运维工具  构建 " + BuildInfo.BuildTime;
+#endif
             LoadConfig();
             UpdateUIFromConfig();
 
