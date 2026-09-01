@@ -94,6 +94,7 @@
     <Compile Include="Models\SourceFolderEntry.cs" />
     <Compile Include="Services\DpapiHelper.cs" />
     <Compile Include="Services\IFileTransferService.cs" />
+    <Compile Include="Services\TransferUploadResult.cs" />
     <Compile Include="Services\S3Service.cs" />
     <Compile Include="Services\SftpService.cs" />
     <Compile Include="Services\SmbService.cs" />
@@ -156,4 +157,29 @@
     <Resource Include="Resources\AppLogo.png" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Release：把编译时刻写入程序集，拷贝 exe 后标题仍显示该时间。Debug 不生成，窗口不显示。 -->
+  <Target Name="WriteBuildInfo" BeforeTargets="CoreCompile" Condition="'$(Configuration)' == 'Release'">
+    <MakeDir Directories="$(IntermediateOutputPath)" />
+    <PropertyGroup>
+      <_BuildTime>$([System.DateTime]::Now.ToString('yyyy-MM-dd HH:mm'))</_BuildTime>
+      <_BuildInfoFile>$(IntermediateOutputPath)BuildInfo.g.cs</_BuildInfoFile>
+    </PropertyGroup>
+    <WriteLinesToFile File="$(_BuildInfoFile)"
+                      Overwrite="true"
+                      Encoding="UTF-8"
+                      Lines="namespace MoveImageForm { internal static class BuildInfo { public const string BuildTime = &quot;$(_BuildTime)&quot;%3B } }" />
+    <ItemGroup>
+      <Compile Include="$(_BuildInfoFile)" />
+    </ItemGroup>
+    <Message Importance="high" Text="构建时间已写入: $(_BuildTime)" />
+  </Target>
+  <!-- 编译完成后自动输出到仓库统一目录，避免到 bin\Debug / bin\Release 多处查找 -->
+  <Target Name="CopyToOutBin" AfterTargets="Build">
+    <PropertyGroup>
+      <OutBinDir>$(MSBuildThisFileDirectory)..\out-bin\</OutBinDir>
+    </PropertyGroup>
+    <MakeDir Directories="$(OutBinDir)" />
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(OutBinDir)" SkipUnchangedFiles="false" />
+    <Message Importance="high" Text="已输出到: $(OutBinDir)$(TargetFileName)" />
+  </Target>
 </Project>

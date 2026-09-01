@@ -43,9 +43,11 @@
                         <Border x:Name="borderTransferStatus" Grid.Row="0" Background="#E8F4E8"
                                 BorderBrush="#90D090" BorderThickness="1" CornerRadius="4"
                                 Padding="10,6" Margin="0,0,0,10" Visibility="Collapsed">
-                            <StackPanel Orientation="Horizontal">
+                            <StackPanel>
                                 <TextBlock x:Name="txtTransferStatus" FontSize="12" Foreground="#006600"
-                                           VerticalAlignment="Center"/>
+                                           VerticalAlignment="Center" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="txtMoveActivity" FontSize="12" Foreground="#335533"
+                                           Margin="0,4,0,0" Visibility="Collapsed" TextWrapping="Wrap"/>
                             </StackPanel>
                         </Border>
 
@@ -255,49 +257,6 @@
                     <TextBlock Grid.Row="5" Margin="0,8,0,0" FontSize="11" Foreground="#888">
                         列表「监听」开关：打开=检测并自动启动，关闭=不检测。进程未运行时将直接启动，启动过程中显示 loading。
                     </TextBlock>
-                </Grid>
-            </TabItem>
-
-            <!-- ===== Tab 3: 版本更新 ===== -->
-            <TabItem Header="版本更新">
-                <Grid Margin="5">
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
-                    </Grid.RowDefinitions>
-
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Margin="0,0,0,12">
-                        <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180">
-                            <StackPanel>
-                                <TextBlock x:Name="txtLocalVersion" FontSize="28" FontWeight="Bold" Foreground="#0078d4" HorizontalAlignment="Center">-</TextBlock>
-                                <TextBlock Text="当前本地版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Border>
-                        <Border Background="#F5F5F5" Padding="20" CornerRadius="4" Width="180" Margin="12,0,0,0">
-                            <StackPanel>
-                                <TextBlock x:Name="txtCloudVersion" FontSize="28" FontWeight="Bold" Foreground="#107c10" HorizontalAlignment="Center">-</TextBlock>
-                                <TextBlock Text="云端最新版本" FontSize="12" Foreground="#888" HorizontalAlignment="Center" Margin="0,4,0,0"/>
-                            </StackPanel>
-                        </Border>
-                    </StackPanel>
-
-                    <Border x:Name="borderNewVersion" Grid.Row="1" Background="#E8F4E8" Padding="10" CornerRadius="4" Margin="0,0,0,12" Visibility="Collapsed">
-                        <TextBlock x:Name="txtNewVersionInfo" FontSize="13"/>
-                    </Border>
-
-                    <TextBlock x:Name="txtLastCheckTime" Grid.Row="2" FontSize="12" Foreground="#888" Margin="0,0,0,12">上次检查时间: 从未检查</TextBlock>
-
-                    <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,0,0,12">
-                        <Button x:Name="btnCheckUpdate" Content="立即检查" Width="90" Height="30" Click="BtnCheckUpdate_Click"/>
-                        <CheckBox x:Name="chkAutoCheck" Content="启用定时检查" VerticalAlignment="Center" Margin="12,0,0,0"
-                                  Checked="ChkAutoCheck_Changed" Unchecked="ChkAutoCheck_Changed"/>
-                    </StackPanel>
-
-                    <CheckBox x:Name="chkAutoStart" Grid.Row="4" Content="开机自动启动" VerticalAlignment="Center"
-                              Checked="ChkAutoStart_Changed" Unchecked="ChkAutoStart_Changed"/>
                 </Grid>
             </TabItem>
 

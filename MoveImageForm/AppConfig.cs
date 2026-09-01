@@ -7,7 +7,12 @@ namespace MoveImageForm
     [XmlRoot("Config")]
     public class AppConfig
     {
-        // ===== 文件搬运 — 源目录 =====
+        // ===== 文件搬运 — 源目录（新版：动态列表） =====
+        [XmlArray("SourceFolders")]
+        [XmlArrayItem("SourceFolder")]
+        public List<SourceFolderEntry> SourceFolders { get; set; } = new List<SourceFolderEntry>();
+
+        // ===== 旧版兼容字段（加载旧 config.xml 后自动迁移到 SourceFolders） =====
         [XmlElement]
         public string SourcePath { get; set; } = "";
         [XmlElement]
@@ -56,24 +61,62 @@ namespace MoveImageForm
             return SftpProfiles.Find(p => p.Name == name);
         }
 
-        /// <summary>获取 SourcePath 对应的 Profile。未配置返回 null。</summary>
-        public SftpProfile GetProfileForSource(string sourceKey)
+        /// <summary>获取 SourceFolderEntry 对应的 Profile。未配置返回 null。</summary>
+        public SftpProfile GetProfileForSource(SourceFolderEntry entry)
         {
-            string profileName = sourceKey == "SourcePath2"
-                ? SourcePath2Profile
-                : SourcePath1Profile;
-            return FindProfile(profileName);
+            if (entry == null) return null;
+            return FindProfile(entry.ProfileName);
         }
 
-        /// <summary>返回所有在 SourcePath 中引用到的 Profile 名称</summary>
+        /// <summary>返回所有在 SourceFolders 中引用到的 Profile 名称</summary>
         public List<string> GetActiveProfileNames()
         {
             var names = new List<string>();
+            if (SourceFolders != null)
+            {
+                foreach (var sf in SourceFolders)
+                {
+                    if (!string.IsNullOrWhiteSpace(sf.Path) && !string.IsNullOrWhiteSpace(sf.ProfileName))
+                        names.Add(sf.ProfileName);
+                }
+            }
+            // 兼容旧格式
             if (!string.IsNullOrWhiteSpace(SourcePath) && !string.IsNullOrWhiteSpace(SourcePath1Profile))
                 names.Add(SourcePath1Profile);
             if (!string.IsNullOrWhiteSpace(SourcePath2) && !string.IsNullOrWhiteSpace(SourcePath2Profile))
                 names.Add(SourcePath2Profile);
             return names;
+        }
+
+        /// <summary>将旧版 SourcePath/SourcePath2 配置迁移到 SourceFolders 列表</summary>
+        public void MigrateSourceFolders()
+        {
+            if (SourceFolders == null)
+                SourceFolders = new List<SourceFolderEntry>();
+
+            if (SourceFolders.Count == 0)
+            {
+                if (!string.IsNullOrWhiteSpace(SourcePath))
+                {
+                    SourceFolders.Add(new SourceFolderEntry
+                    {
+                        Path = SourcePath,
+                        ProfileName = SourcePath1Profile ?? ""
+                    });
+                    SourcePath = "";
+                    SourcePath1Profile = "";
+                }
+                if (!string.IsNullOrWhiteSpace(SourcePath2))
+                {
+                    SourceFolders.Add(new SourceFolderEntry
+                    {
+                        Path = SourcePath2,
+                        ProfileName = SourcePath2Profile ?? ""
+                    });
+                    SourcePath2 = "";
+                    SourcePath2Profile = "";
+                }
+            }
         }
 
         // ===== 版本更新 =====

@@ -51,7 +51,15 @@
 
         <!-- 密码 -->
         <TextBlock x:Name="lblPassword" Grid.Row="10" Text="密码:" Margin="0,0,0,5"/>
-        <PasswordBox x:Name="txtPassword" Grid.Row="11" Height="28" Margin="0,0,0,10"/>
+        <DockPanel Grid.Row="11" Margin="0,0,0,10">
+            <CheckBox x:Name="chkShowPassword" Content="显示密码" DockPanel.Dock="Right"
+                      VerticalAlignment="Center" Margin="5,0,0,0"
+                      Checked="ChkShowPassword_Changed" Unchecked="ChkShowPassword_Changed"/>
+            <Grid>
+                <PasswordBox x:Name="txtPassword" Height="28"/>
+                <TextBox x:Name="txtPasswordVisible" Height="28" Visibility="Collapsed"/>
+            </Grid>
+        </DockPanel>
 
         <!-- 权限 (SFTP only; S3 时隐藏) -->
         <TextBlock x:Name="lblRole" Grid.Row="12" Text="权限:" Margin="0,0,0,5"/>

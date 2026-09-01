@@ -86,8 +86,8 @@ namespace MoveImageForm.Services
             }
         }
 
-        /// <summary>上传单个文件到远程路径。appendOnly=true 时跳过已存在文件。返回 true=成功, false=跳过</summary>
-        public bool UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
+        /// <summary>上传单个文件到远程路径。appendOnly=true 时跳过已存在文件。</summary>
+        public TransferUploadResult UploadFile(string localPath, string remoteRelativePath, bool appendOnly = false)
         {
             try
             {
@@ -98,19 +98,17 @@ namespace MoveImageForm.Services
                 string remoteFullPath = ResolveRemotePath(remoteRelativePath);
 
                 if (appendOnly && _client.Exists(remoteFullPath))
-                {
-                    return false; // skipped — already exists
-                }
+                    return TransferUploadResult.Skip("远端已存在(追加模式)");
 
                 using (var fileStream = File.OpenRead(localPath))
                 {
                     _client.UploadFile(fileStream, remoteFullPath, true);
                 }
-                return true; // success
+                return TransferUploadResult.Ok();
             }
-            catch
+            catch (Exception ex)
             {
-                return false; // failed
+                return TransferUploadResult.Fail(ex.Message);
             }
         }
 

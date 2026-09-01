@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SourcePath />
+  <SourcePath2 />
+  <SourcePath1Profile />
+  <SourcePath2Profile />
+  <SourceFolders />
+  <TransferMode>Cut</TransferMode>
+  <EnableTimeRule>true</EnableTimeRule>
+  <TimeIntervalSeconds>60</TimeIntervalSeconds>
+  <EnableSizeRule>false</EnableSizeRule>
+  <SizeLimitMB>100</SizeLimitMB>
+  <EnableCountRule>false</EnableCountRule>
+  <CountLimit>1000</CountLimit>
+  <EnableEmptyFolderRule>false</EnableEmptyFolderRule>
+  <EmptyFolderHours>24</EmptyFolderHours>
+  <SftpProfiles>
+    <Profile>
+      <Name>SMB传输</Name>
+      <Role>admin</Role>
+      <TransportType>SMB</TransportType>
+      <Host />
+      <Port>22</Port>
+      <Username />
+      <Password />
+      <RemoteRoot />
+    </Profile>
+  </SftpProfiles>
+  <UpdateServerPath />
+  <CheckIntervalMinutes>30</CheckIntervalMinutes>
+  <AutoUpdate>false</AutoUpdate>
+  <AutoStart>false</AutoStart>
+  <LastCheckTime />
+  <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
+  <WatchProcesses />
+</Config>
