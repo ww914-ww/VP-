@@ -1,7 +1,9 @@
 using System;
 using System.IO;
 using System.Linq;
+using System.Net.Sockets;
 using Renci.SshNet;
+using Renci.SshNet.Common;
 using Renci.SshNet.Sftp;
 using MoveImageForm.Models;
 
@@ -40,7 +42,22 @@ namespace MoveImageForm.Services
             }
 
             _client = new SftpClient(_host, _port, _username, _password);
+            // 单次 SFTP 操作最多等待 120 秒：连接半死（无响应无断开）时避免无限阻塞卡死（曾卡死 6 天）
+            _client.OperationTimeout = TimeSpan.FromSeconds(120);
             _client.Connect();
+        }
+
+        /// <summary>判断异常是否为连接中断/超时类（半开连接、网络断、代理断），遍历内部异常以防包装</summary>
+        private static bool IsConnectionException(Exception ex)
+        {
+            while (ex != null)
+            {
+                if (ex is SshOperationTimeoutException || ex is SshConnectionException ||
+                    ex is SocketException || ex is ProxyException)
+                    return true;
+                ex = ex.InnerException;
+            }
+            return false;
         }
 
         public void Disconnect()
@@ -108,6 +125,9 @@ namespace MoveImageForm.Services
             }
             catch (Exception ex)
             {
+                // 连接类异常：主动断开，让上层检测 IsConnected 后中止本轮并触发重连
+                if (IsConnectionException(ex))
+                    Disconnect();
                 return TransferUploadResult.Fail(ex.Message);
             }
         }
@@ -137,8 +157,11 @@ namespace MoveImageForm.Services
                     || Math.Abs((localInfo.LastWriteTime - remoteAttrs.LastWriteTime).TotalSeconds) < 2;
                 return sameSize && notNewer;
             }
-            catch
+            catch (Exception ex)
             {
+                // 连接类异常：主动断开，让上层检测 IsConnected 后中止本轮并触发重连
+                if (IsConnectionException(ex))
+                    Disconnect();
                 // 比较失败时保守处理：认为需要上传
                 return false;
             }
