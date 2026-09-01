@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Sockets;
@@ -17,6 +18,49 @@ namespace MoveImageForm.Services
         private readonly string _username;
         private readonly string _password;
         private readonly string _remoteRoot;
+
+        // ===== 增量记忆缓存（方案B）：避免每轮对每个文件都做 2 次 SFTP 往返（Exists + GetAttributes）=====
+        // 只在远程比对确认一致或上传成功时写入；程序重启自动清空；仅被 IsTargetFileCurrent 消费。
+        // 语义前提：远程目录只被本工具写入，故"本地文件未变"⇒"远程仍一致"。
+        private const int SyncedCacheMax = 50000;
+        private readonly Dictionary<string, SyncedFileInfo> _syncedFiles =
+            new Dictionary<string, SyncedFileInfo>(StringComparer.OrdinalIgnoreCase);
+        // 写入顺序队列（含快照）：超上限时按写入顺序淘汰最旧记录，快照不匹配的旧条目作废，避免误删新记录
+        private readonly Queue<KeyValuePair<string, SyncedFileInfo>> _syncedOrder =
+            new Queue<KeyValuePair<string, SyncedFileInfo>>();
+
+        /// <summary>已确认同步的本地文件快照：大小 + 本地修改时间（NTFS 100ns 精度）</summary>
+        private struct SyncedFileInfo
+        {
+            public long Length;
+            public DateTime LastWriteTime;
+        }
+
+        /// <summary>缓存键：本地路径 + 远端路径（NUL 不会出现在合法路径中，防止分隔符碰撞）</summary>
+        private static string CacheKey(string localPath, string remoteRelativePath)
+        {
+            return localPath + "\0" + remoteRelativePath;
+        }
+
+        /// <summary>记录"已确认同步"的文件快照；超上限时按写入顺序淘汰最旧记录（FIFO）。</summary>
+        private void RecordSynced(string localPath, string remoteRelativePath, SyncedFileInfo info)
+        {
+            string key = CacheKey(localPath, remoteRelativePath);
+            _syncedFiles[key] = info;
+            _syncedOrder.Enqueue(new KeyValuePair<string, SyncedFileInfo>(key, info));
+            while (_syncedFiles.Count > SyncedCacheMax && _syncedOrder.Count > 0)
+            {
+                var oldest = _syncedOrder.Dequeue();
+                SyncedFileInfo current;
+                // 快照与当前记录一致才淘汰，否则说明该 key 已被更新的记录覆盖（旧队列条目作废）
+                if (_syncedFiles.TryGetValue(oldest.Key, out current)
+                    && current.Length == oldest.Value.Length
+                    && current.LastWriteTime == oldest.Value.LastWriteTime)
+                {
+                    _syncedFiles.Remove(oldest.Key);
+                }
+            }
+        }
 
         public bool IsConnected => _client != null && _client.IsConnected;
 
@@ -121,6 +165,9 @@ namespace MoveImageForm.Services
                 {
                     _client.UploadFile(fileStream, remoteFullPath, true);
                 }
+                // 上传成功 → 记录到增量缓存，下一轮直接跳过（远程内容即本地内容）
+                var localInfo = new FileInfo(localPath);
+                RecordSynced(localPath, remoteRelativePath, new SyncedFileInfo { Length = localInfo.Length, LastWriteTime = localInfo.LastWriteTime });
                 return TransferUploadResult.Ok();
             }
             catch (Exception ex)
@@ -140,12 +187,21 @@ namespace MoveImageForm.Services
         {
             try
             {
-                string remoteFullPath = ResolveRemotePath(remoteRelativePath);
-                if (!_client.Exists(remoteFullPath))
-                    return false;
-
                 var localInfo = new FileInfo(localPath);
                 if (!localInfo.Exists)
+                    return false;
+
+                // 增量记忆缓存命中：本地文件与上次确认同步时完全一致 → 直接判定已同步（0 次 SFTP 往返）
+                SyncedFileInfo cached;
+                if (_syncedFiles.TryGetValue(CacheKey(localPath, remoteRelativePath), out cached)
+                    && cached.Length == localInfo.Length
+                    && cached.LastWriteTime == localInfo.LastWriteTime)
+                {
+                    return true;
+                }
+
+                string remoteFullPath = ResolveRemotePath(remoteRelativePath);
+                if (!_client.Exists(remoteFullPath))
                     return false;
 
                 var remoteAttrs = _client.GetAttributes(remoteFullPath);
@@ -155,7 +211,10 @@ namespace MoveImageForm.Services
                 bool sameSize = localInfo.Length == remoteAttrs.Size;
                 bool notNewer = localInfo.LastWriteTime <= remoteAttrs.LastWriteTime
                     || Math.Abs((localInfo.LastWriteTime - remoteAttrs.LastWriteTime).TotalSeconds) < 2;
-                return sameSize && notNewer;
+                bool current = sameSize && notNewer;
+                if (current)
+                    RecordSynced(localPath, remoteRelativePath, new SyncedFileInfo { Length = localInfo.Length, LastWriteTime = localInfo.LastWriteTime });
+                return current;
             }
             catch (Exception ex)
             {
