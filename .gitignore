@@ -65,3 +65,9 @@ $RECYCLE.BIN/
 
 # macOS
 .DS_Store
+
+# 灰度更新测试产物
+tests/**/tmp/
+tests/**/test-results.log
+tests/test-run.log
+tests/test-console.log

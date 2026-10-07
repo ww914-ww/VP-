@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="15.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <Import Project="$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props" Condition="Exists('$(MSBuildExtensionsPath)\$(MSBuildToolsVersion)\Microsoft.Common.props')" />
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Release</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <OutputType>Exe</OutputType>
+    <RootNamespace>UpdateSystemTests</RootNamespace>
+    <AssemblyName>UpdateSystemTests</AssemblyName>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <FileAlignment>512</FileAlignment>
+    <AutoGenerateBindingRedirects>true</AutoGenerateBindingRedirects>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Optimize>true</Optimize>
+    <OutputPath>bin\Release\</OutputPath>
+    <DefineConstants>TRACE</DefineConstants>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <ItemGroup>
+    <Reference Include="System" />
+    <Reference Include="System.Core" />
+    <Reference Include="System.Xml" />
+    <Reference Include="System.Xml.Linq" />
+    <Reference Include="System.Security" />
+    <Reference Include="System.Net.Http" />
+    <Reference Include="System.Web.Extensions" />
+    <Reference Include="Microsoft.CSharp" />
+    <!-- SSH.NET 及依赖：复用已发布包中的 dll -->
+    <Reference Include="Renci.SshNet">
+      <HintPath>..\..\Deploy-Client\versions\1.0.3\Renci.SshNet.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="Microsoft.Bcl.AsyncInterfaces">
+      <HintPath>..\..\Deploy-Client\versions\1.0.3\Microsoft.Bcl.AsyncInterfaces.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Threading.Tasks.Extensions">
+      <HintPath>..\..\Deploy-Client\versions\1.0.3\System.Threading.Tasks.Extensions.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+    <Reference Include="System.Runtime.CompilerServices.Unsafe">
+      <HintPath>..\..\Deploy-Client\versions\1.0.3\System.Runtime.CompilerServices.Unsafe.dll</HintPath>
+      <Private>true</Private>
+    </Reference>
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="Program.cs" />
+    <!-- Launcher 侧被测源码（链接编译，与生产代码同源） -->
+    <Compile Include="..\..\Launcher\GrayPolicy.cs"><Link>Src\Launcher.GrayPolicy.cs</Link></Compile>
+    <Compile Include="..\..\Launcher\MachineIdStore.cs"><Link>Src\Launcher.MachineIdStore.cs</Link></Compile>
+    <Compile Include="..\..\Launcher\ManifestVerifier.cs"><Link>Src\Launcher.ManifestVerifier.cs</Link></Compile>
+    <Compile Include="..\..\Launcher\UpdateInstaller.cs"><Link>Src\Launcher.UpdateInstaller.cs</Link></Compile>
+    <Compile Include="..\..\Launcher\UpdateCheckCore.cs"><Link>Src\Launcher.UpdateCheckCore.cs</Link></Compile>
+    <!-- 主程序侧被测源码（链接编译，与生产代码同源） -->
+    <Compile Include="..\..\MoveImageForm\AppConfig.cs"><Link>Src\AppConfig.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\ProcessInfo.cs"><Link>Src\ProcessInfo.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Models\SftpProfile.cs"><Link>Src\SftpProfile.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Models\RemoteFileInfo.cs"><Link>Src\RemoteFileInfo.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Models\SourceFolderEntry.cs"><Link>Src\SourceFolderEntry.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\DpapiHelper.cs"><Link>Src\DpapiHelper.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\IFileTransferService.cs"><Link>Src\IFileTransferService.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\TransferUploadResult.cs"><Link>Src\TransferUploadResult.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\SftpService.cs"><Link>Src\SftpService.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\SmbService.cs"><Link>Src\SmbService.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\S3Service.cs"><Link>Src\S3Service.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\SessionManager.cs"><Link>Src\SessionManager.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\GrayPolicy.cs"><Link>Src\App.GrayPolicy.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\GrayState.cs"><Link>Src\GrayState.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\MachineIdStore.cs"><Link>Src\App.MachineIdStore.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\VersionInfo.cs"><Link>Src\VersionInfo.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\HeartbeatService.cs"><Link>Src\HeartbeatService.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\UpdateCheckService.cs"><Link>Src\UpdateCheckService.cs</Link></Compile>
+  </ItemGroup>
+  <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+</Project>
