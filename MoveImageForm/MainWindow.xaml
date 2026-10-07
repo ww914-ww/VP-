@@ -266,6 +266,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="*"/>
                         <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
                     <ListBox x:Name="lstAccounts" Grid.Row="0" Margin="0,0,0,10">
@@ -307,7 +308,18 @@
                         </ListBox.ItemTemplate>
                     </ListBox>
 
-                    <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Center">
+                    <Border Grid.Row="1" Margin="0,0,0,10" Padding="10,8" Background="#F5F5F5"
+                            BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="4" Width="620"
+                            HorizontalAlignment="Left">
+                        <StackPanel>
+                            <CheckBox x:Name="chkGrayOptIn" Content="参与灰度测试（允许本机接收灰度版本更新）"
+                                      FontSize="12" Checked="ChkGrayOptIn_Changed" Unchecked="ChkGrayOptIn_Changed"/>
+                            <TextBlock FontSize="10" Foreground="#888" Margin="18,4,0,0" TextWrapping="Wrap"
+                                       Text="勾选后，当运维发布灰度版本且云端策略要求自愿参与时，本机才可能被选中升级；不勾选则只接收正式版本。"/>
+                        </StackPanel>
+                    </Border>
+
+                    <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Center">
                         <Button x:Name="btnAddAccount" Content="+ 添加账号" Width="100" Height="30"
                                 Click="BtnAddAccount_Click"/>
                     </StackPanel>

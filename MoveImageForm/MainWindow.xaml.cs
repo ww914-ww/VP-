@@ -51,6 +51,12 @@ namespace MoveImageForm
 
         private bool _isLoadingConfig;
 
+        // 灰度更新与心跳（v1.1.0+）
+        private HeartbeatService _heartbeatService;
+        private UpdateCheckService _updateCheckService;
+        private string _appRoot;
+        private string _baseDir;
+
         public MainWindow()
         {
             InitializeComponent();
@@ -342,6 +348,8 @@ namespace MoveImageForm
                 }
                 UpdateConfigFromUI();
                 SaveConfig();
+                _heartbeatService?.Stop();
+                _updateCheckService?.Stop();
                 _session.Logout();
                 _notifyIcon.Visible = false;
                 System.Windows.Application.Current.Shutdown();
@@ -363,17 +371,68 @@ namespace MoveImageForm
 #if !DEBUG
             Title = "VP运维工具  构建 " + BuildInfo.BuildTime;
 #endif
+            _baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            _appRoot = VersionInfo.GetAppRoot(_baseDir);
+
+            // Launcher 自更新：版本包携带 Launcher.new 时，在 Launcher 未运行的窗口期替换
+            ApplyLauncherSelfUpdate();
+
             LoadConfig();
             UpdateUIFromConfig();
 
             // v1.0.3+：开机自启动写死启用（无界面选项，每次启动确保注册表 Run 键存在）
             EnsureAutoStart();
 
+            // v1.1.0+：心跳上报（SFTP）与运行中定时更新检查（失败静默，绝不影响搬运业务）
+            _heartbeatService = new HeartbeatService(_session, () => _config, _appRoot, _baseDir, Log);
+            _heartbeatService.Start();
+            _updateCheckService = new UpdateCheckService(() => _config, _appRoot, _baseDir, Log);
+            _updateCheckService.Start();
+
             // 自动登录：用已保存的密码连接活跃账号，成功后自动开始搬运
             // （开机自启动 = 启动软件 + 登录账号 + 开始搬运）
             TryAutoLogin();
 
             InitProcessMonitoring();
+        }
+
+        /// <summary>
+        /// Launcher 自更新：当前版本目录携带 Launcher.new 时，备份旧 Launcher.exe 为 Launcher.old 后替换。
+        /// 替换失败（文件占用/权限）静默跳过，Launcher.new 保留待下次启动重试。
+        /// </summary>
+        private void ApplyLauncherSelfUpdate()
+        {
+            try
+            {
+                string newFile = Path.Combine(_baseDir, "Launcher.new");
+                if (!File.Exists(newFile)) return;
+
+                // 仅正常部署结构（appRoot\versions\{ver}\）下执行，开发直跑不触碰
+                if (!string.Equals(Path.GetFullPath(_appRoot),
+                        Path.GetFullPath(Path.Combine(_baseDir, "..", "..")),
+                        StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                string target = Path.Combine(_appRoot, "Launcher.exe");
+                string backup = Path.Combine(_appRoot, "Launcher.old");
+
+                if (File.Exists(backup)) File.Delete(backup);
+                if (File.Exists(target)) File.Move(target, backup);
+                File.Move(newFile, target);
+                Log("[系统] Launcher 已自更新（旧版备份为 Launcher.old）");
+            }
+            catch
+            {
+                // 替换失败：尽力还原，下次启动再试
+                try
+                {
+                    string target = Path.Combine(_appRoot, "Launcher.exe");
+                    string backup = Path.Combine(_appRoot, "Launcher.old");
+                    if (!File.Exists(target) && File.Exists(backup))
+                        File.Move(backup, target);
+                }
+                catch { }
+            }
         }
 
         /// <summary>
@@ -1952,6 +2011,17 @@ namespace MoveImageForm
             lstAccounts.ItemsSource = _config.SftpProfiles;
         }
 
+        /// <summary>可选灰度开关：勾选即保存到 config.xml（GrayOptIn），云端 requireOptIn=true 时仅勾选机台参与百分比灰度</summary>
+        private void ChkGrayOptIn_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoadingConfig || _config == null) return;
+            _config.GrayOptIn = chkGrayOptIn.IsChecked ?? false;
+            SaveConfig();
+            Log(_config.GrayOptIn
+                ? "[系统] 本机已报名参与灰度测试（云端发布灰度版本时可能被选中升级）"
+                : "[系统] 本机已退出灰度测试（仅接收正式版本；已安装的灰度版本不会自动降级，如需回退请联系运维）");
+        }
+
         #endregion
 
         #region Configuration Management
@@ -2374,6 +2444,9 @@ namespace MoveImageForm
 
                 // 账号列表
                 lstAccounts.ItemsSource = _config.SftpProfiles;
+
+                // 可选灰度开关
+                chkGrayOptIn.IsChecked = _config.GrayOptIn;
 
                 // 根据登录状态更新 UI
                 ApplyRoleRestrictions();

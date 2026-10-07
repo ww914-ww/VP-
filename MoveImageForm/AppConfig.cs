@@ -132,6 +132,28 @@ namespace MoveImageForm
         [XmlElement]
         public string LastCheckTime { get; set; } = "";
 
+        // ===== 灰度更新与心跳（v1.1.0+） =====
+        /// <summary>可选灰度：本机是否自愿参与灰度测试（默认 false 不参与）；
+        /// 云端 gray.requireOptIn=true 时仅 true 的机台参与百分比灰度</summary>
+        [XmlElement]
+        public bool GrayOptIn { get; set; } = false;
+
+        /// <summary>是否启用 SFTP 心跳上报（默认 true）</summary>
+        [XmlElement]
+        public bool HeartbeatEnabled { get; set; } = true;
+
+        /// <summary>心跳上报间隔（分钟，默认 5）</summary>
+        [XmlElement]
+        public int HeartbeatIntervalMinutes { get; set; } = 5;
+
+        /// <summary>心跳上报显式指定账号（Profile.Name，可选；为空自动选第一个可写 SFTP 账号）</summary>
+        [XmlElement]
+        public string HeartbeatProfileName { get; set; } = "";
+
+        /// <summary>运行中更新检查间隔（小时，默认 4）</summary>
+        [XmlElement]
+        public int UpdateCheckIntervalHours { get; set; } = 4;
+
         // ===== 进程监听 =====
         [XmlElement]
         public int ProcessCheckIntervalSeconds { get; set; } = 5;

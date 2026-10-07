@@ -16,6 +16,35 @@ namespace MoveImageForm
 
         protected override void OnStartup(StartupEventArgs e)
         {
+            // --version --probe-out <file>：Launcher 安装后的探活探测。
+            // 必须在单实例 mutex 之前处理：探测时主程序可能正在运行，且探测不弹窗、不建窗口。
+            if (e.Args != null && e.Args.Length >= 1 &&
+                string.Equals(e.Args[0], "--version", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    string probeOut = null;
+                    for (int i = 1; i < e.Args.Length - 1; i++)
+                    {
+                        if (string.Equals(e.Args[i], "--probe-out", StringComparison.OrdinalIgnoreCase))
+                        {
+                            probeOut = e.Args[i + 1].Trim('"');
+                            break;
+                        }
+                    }
+                    if (!string.IsNullOrEmpty(probeOut))
+                    {
+                        string baseDir = System.IO.Path.GetDirectoryName(
+                            System.Reflection.Assembly.GetExecutingAssembly().Location);
+                        System.IO.File.WriteAllText(probeOut,
+                            Services.VersionInfo.GetCurrentVersion(baseDir));
+                    }
+                }
+                catch { /* 探测失败由 Launcher 按探活失败处理并回滚 */ }
+                Shutdown();
+                return;
+            }
+
             const string appName = "MoveImageForm_SingleInstanceApp";
             bool createdNew;
 
