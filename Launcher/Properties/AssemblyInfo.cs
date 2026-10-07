@@ -12,5 +12,7 @@ using System.Windows;
 [assembly: AssemblyCulture("")]
 [assembly: ComVisible(false)]
 [assembly: ThemeInfo(ResourceDictionaryLocation.None, ResourceDictionaryLocation.SourceAssembly)]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+// v1.1.0：灰度更新（GrayPolicy/MachineIdStore）+ 更新链路可靠性修复
+// （manifest 校验 / --apply 安装模式替代 bat / 失败熔断 / 启动必查）
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]

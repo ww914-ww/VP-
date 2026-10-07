@@ -4,7 +4,6 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 using System.Windows;
 using System.Xml;
 
@@ -14,15 +13,16 @@ namespace Launcher
     {
         private string _appRoot;
         private string _configPath;
-        private string _statusPath;
         private string _updateServerPath;
+        private bool _grayOptIn;
+        private string _machineId = "";
+        private UpdateCheckCore.CheckResult _lastCheck;
 
         public MainWindow()
         {
             InitializeComponent();
             _appRoot = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
             _configPath = Path.Combine(_appRoot, "config.xml");
-            _statusPath = Path.Combine(_appRoot, "update.status");
         }
 
         private async void Window_Loaded(object sender, RoutedEventArgs e)
@@ -31,77 +31,68 @@ namespace Launcher
             {
                 // 1. 轻量操作（同步，无网络）
                 txtStatus.Text = "正在检查...";
-                string status = ReadUpdateStatus();
+                string status = UpdateInstaller.ReadStatus(_appRoot);
                 LoadConfig();
+                _machineId = MachineIdStore.GetOrCreate(_appRoot);
 
-                // 2. 清理残留状态
+                // 2. 清理/恢复上次未完成的更新状态
                 if (status == "installing")
                 {
+                    // --apply 中途被杀（断电等）：本地无可用版本时从备份恢复
                     txtStatus.Text = "正在恢复上次更新...";
-                    if (!VerifyCurrentVersion())
+                    if (VersionDirs.GetLocalLatestVersion(_appRoot) == "0.0.0")
                         RecoverFromBackup();
-                    WriteUpdateStatus("idle");
+                    UpdateInstaller.WriteStatus(_appRoot, "idle");
                 }
                 else if (status == "ready")
                 {
-                    txtStatus.Text = "有待安装的更新，正在安装...";
-                    InstallUpdate();
-                    return;
+                    // 下载完成但 --apply 未执行（启动安装前被杀）：直接继续安装
+                    string pendingVersion = ReadPendingVersion();
+                    if (!string.IsNullOrEmpty(pendingVersion) &&
+                        Directory.Exists(Path.Combine(_appRoot, "versions", ".temp")))
+                    {
+                        txtStatus.Text = "继续安装未完成的更新...";
+                        StartApply(pendingVersion);
+                        return;
+                    }
+                    UpdateInstaller.WriteStatus(_appRoot, "idle");
                 }
                 else if (status == "downloading")
                 {
-                    string tempDir = Path.Combine(_appRoot, "versions", ".temp");
-                    if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
-                    WriteUpdateStatus("idle");
+                    // 下载中途被杀：清理临时目录，本次重新检查
+                    DeleteTempDir();
+                    UpdateInstaller.WriteStatus(_appRoot, "idle");
                 }
-
-                // 3. 本地版本就绪 → 直接启动，跳过 SMB
-                if (!string.IsNullOrWhiteSpace(_updateServerPath) && VerifyCurrentVersion())
+                else if (status == "done" || status == "failed")
                 {
-                    txtStatus.Text = "本地版本就绪，直接启动...";
-                    StartMainApp();
-                    return;
+                    // --apply 终态：归位后继续正常检查流程
+                    UpdateInstaller.WriteStatus(_appRoot, "idle");
                 }
 
-                // 4. SMB 检查更新（6 秒超时）
+                // 3. 启动时必查更新（6 秒超时；超时/异常直接启动本地版本，绝不阻塞开机自启链路）
                 if (!string.IsNullOrWhiteSpace(_updateServerPath))
                 {
                     txtStatus.Text = "正在检查版本更新...";
                     var checkTask = Task.Run(() => CheckForUpdate());
                     if (await Task.WhenAny(checkTask, Task.Delay(6000)) == checkTask)
-                        return; // CheckForUpdate 内部已处理（调用 StartMainApp 或显示更新面板）
+                        return; // CheckForUpdate 内部已处理（StartMainApp / 显示面板 / 自动降级）
 
-                    txtStatus.Text = "更新服务器不可达（网络超时），直接启动...";
+                    txtStatus.Text = "更新服务器不可达（网络超时），直接启动本地版本...";
                 }
                 else
                 {
+                    // 未配置更新服务器：写 gray.state（stay）供心跳上报
+                    UpdateInstaller.WriteGrayState(_appRoot, "stay",
+                        VersionDirs.GetLocalLatestVersion(_appRoot), "latest", _grayOptIn, 0);
                     txtStatus.Text = "未配置更新服务器，直接启动...";
                 }
                 StartMainApp();
             }
             catch (Exception ex)
             {
-                txtStatus.Text = $"启动失败: {ex.Message}\n尝试直接启动主程序...";
+                txtStatus.Text = $"启动检查异常: {ex.Message}\n尝试直接启动主程序...";
                 StartMainApp();
             }
-        }
-
-        // ==================== 更新状态文件 ====================
-
-        private string ReadUpdateStatus()
-        {
-            try
-            {
-                if (File.Exists(_statusPath))
-                    return File.ReadAllText(_statusPath).Trim();
-            }
-            catch { }
-            return "idle";
-        }
-
-        private void WriteUpdateStatus(string status)
-        {
-            try { File.WriteAllText(_statusPath, status); } catch { }
         }
 
         // ==================== 配置 ====================
@@ -123,6 +114,12 @@ namespace Launcher
                     var cloudNode = doc.SelectSingleNode("//CloudPath");
                     _updateServerPath = cloudNode?.InnerText?.Trim() ?? "";
                 }
+
+                // 可选灰度：本机是否自愿参与灰度测试（默认 false 不参与）
+                var optInNode = doc.SelectSingleNode("//GrayOptIn");
+                bool optIn;
+                _grayOptIn = optInNode != null &&
+                    bool.TryParse(optInNode.InnerText?.Trim(), out optIn) && optIn;
             }
             catch { }
         }
@@ -131,94 +128,75 @@ namespace Launcher
 
         private void CheckForUpdate()
         {
-            try
+            var result = UpdateCheckCore.Evaluate(_updateServerPath, _machineId, _grayOptIn, _appRoot);
+            _lastCheck = result;
+
+            // 写 gray.state 判定轨迹（检查失败时保留上次记录，不覆盖）
+            if (result.Action != UpdateCheckCore.UpdateAction.Error)
             {
-                string versionFile = Path.Combine(_updateServerPath, "version.json");
-                if (!File.Exists(versionFile))
+                string decision;
+                switch (result.Action)
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "未找到云端版本信息，直接启动...");
-                    StartMainApp();
-                    return;
+                    case UpdateCheckCore.UpdateAction.Upgrade: decision = "upgrade"; break;
+                    case UpdateCheckCore.UpdateAction.Downgrade: decision = "rollback"; break;
+                    case UpdateCheckCore.UpdateAction.Fused: decision = "failed"; break;
+                    default: decision = "stay"; break;
                 }
+                UpdateInstaller.WriteGrayState(_appRoot, decision,
+                    result.TargetVersion, result.TargetSource, _grayOptIn, result.PolicyPercent);
+            }
 
-                string json = File.ReadAllText(versionFile);
-                var jss = new JavaScriptSerializer();
-                var data = jss.Deserialize<dynamic>(json);
-                string latestVersion = data["latest"]?.ToString() ?? "";
-
-                var versions = data["versions"] as System.Collections.Generic.Dictionary<string, object>;
-                string cloudDate = "";
-                string cloudNote = "";
-                if (versions != null && versions.ContainsKey(latestVersion))
-                {
-                    var verInfo = versions[latestVersion] as System.Collections.Generic.Dictionary<string, object>;
-                    if (verInfo != null)
-                    {
-                        cloudDate = verInfo.ContainsKey("date") ? verInfo["date"]?.ToString() ?? "" : "";
-                        cloudNote = verInfo.ContainsKey("note") ? verInfo["note"]?.ToString() ?? "" : "";
-                    }
-                }
-
-                string localVer = GetLocalLatestVersion();
-
-                if (string.IsNullOrWhiteSpace(latestVersion))
-                {
-                    StartMainApp();
-                    return;
-                }
-
-                if (IsNewerVersion(latestVersion, localVer))
-                {
+            switch (result.Action)
+            {
+                case UpdateCheckCore.UpdateAction.None:
                     Dispatcher.InvokeAsync(() =>
-                    {
-                        txtStatus.Text = $"发现新版本 {latestVersion}";
-                        txtUpdateInfo.Text = $"版本: {latestVersion}\n日期: {cloudDate}\n\n{cloudNote}\n\n当前本地版本: {localVer}";
-                        panelUpdate.Visibility = Visibility.Visible;
-                    });
-                }
-                else
-                {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = $"已是最新版本 ({localVer})，正在启动...");
+                        txtStatus.Text = $"已是最新版本 ({result.LocalVersion})，正在启动...");
                     StartMainApp();
-                }
-            }
-            catch
-            {
-                Dispatcher.InvokeAsync(() => txtStatus.Text = "无法连接云端，直接启动...");
-                StartMainApp();
+                    break;
+
+                case UpdateCheckCore.UpdateAction.Upgrade:
+                    Dispatcher.InvokeAsync(() => ShowUpdatePanel(result));
+                    break;
+
+                case UpdateCheckCore.UpdateAction.Downgrade:
+                    // 灰度收敛/摘除/回滚指令：自动降级，无需用户确认
+                    Dispatcher.InvokeAsync(() =>
+                        txtStatus.Text = $"版本回退: v{result.LocalVersion} → v{result.TargetVersion}（灰度策略调整），正在自动处理...");
+                    Task.Run(() => DownloadAndInstall(result.TargetVersion));
+                    break;
+
+                case UpdateCheckCore.UpdateAction.Fused:
+                    Dispatcher.InvokeAsync(() =>
+                        txtStatus.Text = $"版本 v{result.TargetVersion} 已暂停更新（安装多次失败），请联系运维。\n正在启动本地版本...");
+                    StartMainApp();
+                    break;
+
+                case UpdateCheckCore.UpdateAction.Dismissed:
+                    Dispatcher.InvokeAsync(() => txtStatus.Text = "正在启动...");
+                    StartMainApp();
+                    break;
+
+                default: // Error
+                    Dispatcher.InvokeAsync(() =>
+                        txtStatus.Text = $"无法检查更新（{result.Error}），直接启动本地版本...");
+                    StartMainApp();
+                    break;
             }
         }
 
-        // ==================== 版本号 ====================
-
-        private string GetLocalLatestVersion()
+        private void ShowUpdatePanel(UpdateCheckCore.CheckResult result)
         {
-            string versionsDir = Path.Combine(_appRoot, "versions");
-            if (!Directory.Exists(versionsDir)) return "0.0.0";
+            bool isGray = result.TargetSource == "gray";
+            txtStatus.Text = isGray
+                ? $"发现灰度版本 {result.TargetVersion}"
+                : $"发现新版本 {result.TargetVersion}";
 
-            var dirs = Directory.GetDirectories(versionsDir);
-            Version best = new Version(0, 0, 0);
-            foreach (var dir in dirs)
-            {
-                string dirName = Path.GetFileName(dir);
-                if (Version.TryParse(dirName, out Version ver) && ver > best)
-                    best = ver;
-            }
-            return $"{best.Major}.{best.Minor}.{best.Build}";
-        }
-
-        private bool IsNewerVersion(string cloudVer, string localVer)
-        {
-            try
-            {
-                var cv = new Version(cloudVer);
-                var lv = new Version(localVer);
-                return cv > lv;
-            }
-            catch
-            {
-                return string.Compare(cloudVer, localVer, StringComparison.OrdinalIgnoreCase) > 0;
-            }
+            string header = isGray
+                ? $"【灰度更新】版本: {result.TargetVersion}（灰度 {result.PolicyPercent}%，本机已报名参与灰度测试）"
+                : $"版本: {result.TargetVersion}";
+            txtUpdateInfo.Text =
+                $"{header}\n日期: {result.CloudDate}\n\n{result.CloudNote}\n\n当前本地版本: {result.LocalVersion}";
+            panelUpdate.Visibility = Visibility.Visible;
         }
 
         // ==================== 下载和安装 ====================
@@ -229,70 +207,64 @@ namespace Launcher
             btnUpdate.IsEnabled = false;
             btnSkip.IsEnabled = false;
 
-            await Task.Run(() => DownloadAndInstall());
+            string target = _lastCheck?.TargetVersion ?? "";
+            if (string.IsNullOrEmpty(target))
+            {
+                txtStatus.Text = "更新目标缺失，请重启 Launcher 重试";
+                return;
+            }
+            await Task.Run(() => DownloadAndInstall(target));
         }
 
         private void BtnSkip_Click(object sender, RoutedEventArgs e)
         {
+            // 记录跳过的版本：该版本不再重复弹窗（云端目标版本变化后恢复提示）
+            string target = _lastCheck?.TargetVersion ?? "";
+            if (!string.IsNullOrEmpty(target))
+                UpdateInstaller.WriteDismissedVersion(_appRoot, target);
             StartMainApp();
         }
 
-        private void DownloadAndInstall()
+        private void DownloadAndInstall(string version)
         {
             try
             {
-                string latestVersion = "";
-
-                // 获取最新版本号
-                string versionFile = Path.Combine(_updateServerPath, "version.json");
-                if (File.Exists(versionFile))
-                {
-                    string json = File.ReadAllText(versionFile);
-                    var jss = new JavaScriptSerializer();
-                    var data = jss.Deserialize<dynamic>(json);
-                    latestVersion = data["latest"]?.ToString() ?? "";
-                }
-
-                if (string.IsNullOrEmpty(latestVersion))
-                {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "未找到最新版本号");
-                    return;
-                }
-
                 Dispatcher.InvokeAsync(() =>
                 {
                     txtStatus.Text = "正在下载更新...";
                     progressBar.Visibility = Visibility.Visible;
                     progressBar.IsIndeterminate = true;
-                    txtProgress.Text = $"正在下载 v{latestVersion} 更新文件...";
+                    txtProgress.Text = $"正在下载 v{version} 更新文件...";
                 });
 
-                WriteUpdateStatus("downloading");
+                UpdateInstaller.WriteStatus(_appRoot, "downloading");
+                UpdateInstaller.Log(_appRoot, "开始下载版本 " + version + "（来源: " + _updateServerPath + "）");
 
+                DeleteTempDir();
                 string tempDir = Path.Combine(_appRoot, "versions", ".temp");
-                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
                 Directory.CreateDirectory(tempDir);
 
-                string remoteVerDir = Path.Combine(_updateServerPath, latestVersion);
-                if (!Directory.Exists(remoteVerDir) ||
-                    !File.Exists(Path.Combine(remoteVerDir, "MoveImageForm.exe")))
+                string remoteVerDir = Path.Combine(_updateServerPath, version);
+                if (!Directory.Exists(remoteVerDir))
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "更新下载失败: 云端版本文件不完整");
-                    WriteUpdateStatus("idle");
+                    OnDownloadFailed(version, "云端版本目录不存在: " + remoteVerDir);
                     return;
                 }
 
-                // SMB 复制
+                // SMB 复制（UNC 直读，不做 net use 挂载，规避 1219 多身份冲突）
                 CopyDirectory(remoteVerDir, tempDir);
 
-                if (!File.Exists(Path.Combine(tempDir, "MoveImageForm.exe")))
+                // 下载完整性校验：必须携带 manifest 且逐文件通过，杜绝半成品安装
+                var verify = ManifestVerifier.VerifyDirectory(tempDir);
+                if (!verify.Success)
                 {
-                    Dispatcher.InvokeAsync(() => txtStatus.Text = "更新下载失败: 下载后文件不完整");
-                    WriteUpdateStatus("idle");
+                    OnDownloadFailed(version, verify.Error);
                     return;
                 }
+                UpdateInstaller.Log(_appRoot, "下载完成，manifest 校验通过（" + verify.FileCount + " 个文件）");
 
-                WriteUpdateStatus("ready");
+                UpdateInstaller.WriteStatus(_appRoot, "ready");
+                WritePendingVersion(version);
 
                 Dispatcher.InvokeAsync(() =>
                 {
@@ -301,122 +273,80 @@ namespace Launcher
                     progressBar.Value = 100;
                 });
 
-                InstallUpdate();
+                // 启动 --apply 无界面安装模式（同步代码执行、全程 update.log、失败自动回滚）
+                StartApply(version);
             }
             catch (Exception ex)
             {
-                Dispatcher.InvokeAsync(() => txtStatus.Text = $"更新失败: {ex.Message}");
-                WriteUpdateStatus("idle");
+                OnDownloadFailed(version, ex.Message);
             }
         }
 
-        private void InstallUpdate()
+        private void OnDownloadFailed(string version, string reason)
+        {
+            UpdateInstaller.Log(_appRoot, "下载失败: " + reason);
+            DeleteTempDir();
+            UpdateInstaller.WriteStatus(_appRoot, "idle");
+            int count = UpdateInstaller.IncrementFailedCount(_appRoot, version, "下载/校验失败: " + reason);
+
+            Dispatcher.InvokeAsync(() =>
+            {
+                progressBar.Visibility = Visibility.Collapsed;
+                txtProgress.Text = "";
+                if (count >= 2)
+                    txtStatus.Text = $"版本 v{version} 更新多次失败，已暂停该版本的更新。\n请检查更新服务器或联系运维。正在启动本地版本...";
+                else
+                    txtStatus.Text = $"更新下载失败: {reason}\n正在启动本地版本...";
+            });
+            // 失败不阻塞使用：稍作停顿让用户看到提示后启动本地版本
+            Task.Delay(2500).ContinueWith(_ => StartMainApp());
+        }
+
+        /// <summary>启动 Launcher --apply 安装模式并退出本实例</summary>
+        private void StartApply(string version)
         {
             try
             {
-                WriteUpdateStatus("installing");
-
-                // 获取版本号
-                string latestVersion = "";
-                string versionFile = Path.Combine(_updateServerPath, "version.json");
-                if (File.Exists(versionFile))
+                string launcherPath = Path.Combine(_appRoot, "Launcher.exe");
+                Process.Start(new ProcessStartInfo(launcherPath, "--apply \"" + version + "\"")
                 {
-                    string json = File.ReadAllText(versionFile);
-                    var jss = new JavaScriptSerializer();
-                    var data = jss.Deserialize<dynamic>(json);
-                    latestVersion = data["latest"]?.ToString() ?? "";
-                }
-
-                string batPath = Path.Combine(_appRoot, "update.bat");
-                string batContent = GenerateUpdateBat(latestVersion);
-                // 使用系统默认编码（中文 Windows 为 GBK），避免 cmd.exe 解析中文路径乱码
-                File.WriteAllText(batPath, batContent, System.Text.Encoding.Default);
-
-                Dispatcher.InvokeAsync(() => txtStatus.Text = "即将重启完成更新...");
-
-                Task.Delay(500).ContinueWith(_ =>
-                {
-                    Dispatcher.InvokeAsync(() =>
-                    {
-                        Process.Start(new ProcessStartInfo(batPath)
-                        {
-                            UseShellExecute = true,
-                            CreateNoWindow = false,
-                            WorkingDirectory = _appRoot
-                        });
-                        Application.Current.Shutdown();
-                    });
+                    UseShellExecute = true,
+                    CreateNoWindow = true,
+                    WorkingDirectory = _appRoot
                 });
+                UpdateInstaller.Log(_appRoot, "已启动安装模式（--apply " + version + "），Launcher 即将退出");
             }
             catch (Exception ex)
             {
-                Dispatcher.InvokeAsync(() => txtStatus.Text = $"安装更新失败: {ex.Message}");
-                WriteUpdateStatus("idle");
+                UpdateInstaller.Log(_appRoot, "启动安装模式失败: " + ex.Message);
+                UpdateInstaller.WriteStatus(_appRoot, "idle");
+                int count = UpdateInstaller.IncrementFailedCount(_appRoot, version, "启动安装失败: " + ex.Message);
+                if (count >= 2)
+                {
+                    Dispatcher.InvokeAsync(() =>
+                        txtStatus.Text = $"版本 v{version} 更新多次失败已熔断，正在启动本地版本...");
+                }
+                StartMainApp();
+                return;
             }
-        }
 
-        private string GenerateUpdateBat(string version)
-        {
-            string versionsDir = Path.Combine(_appRoot, "versions");
-            string newVerDir = Path.Combine(versionsDir, version);
-            string tempDir = Path.Combine(versionsDir, ".temp");
-            string backupDir = Path.Combine(_appRoot, "backup");
-            string launcherPath = Path.Combine(_appRoot, "Launcher.exe");
-
-            return $@"@echo off
-chcp 65001 >nul
-echo 正在更新 VP运维工具 到版本 {version}...
-echo.
-echo 请勿关闭此窗口，更新完成后将自动启动程序...
-echo.
-
-timeout /t 2 /nobreak >nul
-
-taskkill /f /im MoveImageForm.exe >nul 2>&1
-
-if exist ""{newVerDir}"" (
-    if not exist ""{backupDir}"" mkdir ""{backupDir}""
-    robocopy ""{newVerDir}"" ""{backupDir}\{version}.bak"" /E /MOVE >nul 2>&1
-)
-
-robocopy ""{tempDir}"" ""{newVerDir}"" /E /MOVE >nul 2>&1
-
-rd /s /q ""{tempDir}"" 2>nul
-
-echo idle> ""{Path.Combine(_appRoot, "update.status")}""
-
-if exist ""{launcherPath}"" (
-    start """" ""{launcherPath}""
-) else (
-    start """" ""{Path.Combine(newVerDir, "MoveImageForm.exe")}""
-)
-
-del ""%~f0"" & exit
-";
+            Dispatcher.InvokeAsync(() => Application.Current.Shutdown());
         }
 
         // ==================== 崩溃恢复 ====================
-
-        private bool VerifyCurrentVersion()
-        {
-            string localVer = GetLocalLatestVersion();
-            string verDir = Path.Combine(_appRoot, "versions", localVer);
-            return File.Exists(Path.Combine(verDir, "MoveImageForm.exe"));
-        }
 
         private void RecoverFromBackup()
         {
             string backupDir = Path.Combine(_appRoot, "backup");
             if (!Directory.Exists(backupDir)) return;
 
-            var dirs = Directory.GetDirectories(backupDir);
             Version best = new Version(0, 0, 0);
             string bestDir = "";
-            foreach (var dir in dirs)
+            foreach (var dir in Directory.GetDirectories(backupDir))
             {
-                string dirName = Path.GetFileName(dir);
-                string verStr = dirName.Replace(".bak", "");
-                if (Version.TryParse(verStr, out Version ver) && ver > best)
+                string verStr = Path.GetFileName(dir).Replace(".bak", "");
+                Version ver;
+                if (Version.TryParse(verStr, out ver) && ver > best)
                 {
                     best = ver;
                     bestDir = dir;
@@ -425,8 +355,8 @@ del ""%~f0"" & exit
 
             if (!string.IsNullOrWhiteSpace(bestDir))
             {
-                string versionsDir = Path.Combine(_appRoot, "versions");
-                string restoreDir = Path.Combine(versionsDir, $"{best.Major}.{best.Minor}.{best.Build}");
+                string restoreDir = Path.Combine(_appRoot, "versions",
+                    string.Format("{0}.{1}.{2}", best.Major, best.Minor, best.Build));
                 if (Directory.Exists(restoreDir)) Directory.Delete(restoreDir, true);
                 CopyDirectory(bestDir, restoreDir);
 
@@ -452,11 +382,41 @@ del ""%~f0"" & exit
             }
         }
 
+        private void DeleteTempDir()
+        {
+            try
+            {
+                string tempDir = Path.Combine(_appRoot, "versions", ".temp");
+                if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            }
+            catch { }
+        }
+
+        // ==================== 待安装版本记录（ready 状态恢复用） ====================
+
+        private string PendingVersionPath => Path.Combine(_appRoot, "update.pending");
+
+        private void WritePendingVersion(string version)
+        {
+            try { File.WriteAllText(PendingVersionPath, version ?? ""); } catch { }
+        }
+
+        private string ReadPendingVersion()
+        {
+            try
+            {
+                if (File.Exists(PendingVersionPath))
+                    return File.ReadAllText(PendingVersionPath).Trim();
+            }
+            catch { }
+            return "";
+        }
+
         // ==================== 启动主程序 ====================
 
         private void StartMainApp()
         {
-            string localVer = GetLocalLatestVersion();
+            string localVer = VersionDirs.GetLocalLatestVersion(_appRoot);
             string exePath = Path.Combine(_appRoot, "versions", localVer, "MoveImageForm.exe");
 
             // 写诊断日志
@@ -471,8 +431,9 @@ del ""%~f0"" & exit
                     $"localVer = [{localVer}]\r\n" +
                     $"exePath = [{exePath}]\r\n" +
                     $"File.Exists(exePath) = {File.Exists(exePath)}\r\n" +
+                    $"grayOptIn = {_grayOptIn}\r\n" +
+                    $"machineId = [{_machineId}]\r\n" +
                     $"versions dirs = [{string.Join(", ", Array.ConvertAll(dirs, d => Path.GetFileName(d)))}]\r\n" +
-                    $"exePath bytes = [{string.Join(" ", System.Text.Encoding.UTF8.GetBytes(exePath).Select(b => b.ToString("X2")))}\r\n" +
                     $"time = {DateTime.Now:yyyy-MM-dd HH:mm:ss}\r\n",
                     new System.Text.UTF8Encoding(false));
             }

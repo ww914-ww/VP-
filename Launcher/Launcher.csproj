@@ -61,6 +61,11 @@
       <DependentUpon>App.xaml</DependentUpon>
       <SubType>Code</SubType>
     </Compile>
+    <Compile Include="GrayPolicy.cs" />
+    <Compile Include="MachineIdStore.cs" />
+    <Compile Include="ManifestVerifier.cs" />
+    <Compile Include="UpdateCheckCore.cs" />
+    <Compile Include="UpdateInstaller.cs" />
     <Compile Include="MainWindow.xaml.cs">
       <DependentUpon>MainWindow.xaml</DependentUpon>
       <SubType>Code</SubType>
