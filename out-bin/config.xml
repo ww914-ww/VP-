@@ -1,10 +1,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">
+  <SourceFolders />
   <SourcePath />
   <SourcePath2 />
   <SourcePath1Profile />
   <SourcePath2Profile />
-  <SourceFolders />
   <TransferMode>Cut</TransferMode>
   <EnableTimeRule>true</EnableTimeRule>
   <TimeIntervalSeconds>60</TimeIntervalSeconds>
@@ -31,6 +31,11 @@
   <AutoUpdate>false</AutoUpdate>
   <AutoStart>false</AutoStart>
   <LastCheckTime />
+  <GrayOptIn>false</GrayOptIn>
+  <HeartbeatEnabled>true</HeartbeatEnabled>
+  <HeartbeatIntervalMinutes>5</HeartbeatIntervalMinutes>
+  <HeartbeatProfileName />
+  <UpdateCheckIntervalHours>4</UpdateCheckIntervalHours>
   <ProcessCheckIntervalSeconds>5</ProcessCheckIntervalSeconds>
   <WatchProcesses />
 </Config>
