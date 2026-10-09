@@ -319,7 +319,7 @@
                 <Grid Margin="5">
                     <StackPanel>
                         <TextBlock Text="灰度更新" FontWeight="Bold" FontSize="14" Margin="0,5,0,8"/>
-                        <Border Margin="0,0,0,10" Padding="10,8" Background="#F5F5F5"
+                        <Border Margin="0,0,0,16" Padding="10,8" Background="#F5F5F5"
                                 BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="4" Width="620"
                                 HorizontalAlignment="Left">
                             <StackPanel>
@@ -327,6 +327,31 @@
                                           FontSize="12" Checked="ChkGrayOptIn_Changed" Unchecked="ChkGrayOptIn_Changed"/>
                                 <TextBlock FontSize="10" Foreground="#888" Margin="18,4,0,0" TextWrapping="Wrap"
                                            Text="勾选后，当运维发布灰度版本且云端策略要求自愿参与时，本机才可能被选中升级；不勾选则只接收正式版本。"/>
+                            </StackPanel>
+                        </Border>
+
+                        <TextBlock Text="自动恢复搬运" FontWeight="Bold" FontSize="14" Margin="0,5,0,8"/>
+                        <Border Margin="0,0,0,10" Padding="10,8" Background="#F5F5F5"
+                                BorderBrush="#E0E0E0" BorderThickness="1" CornerRadius="4" Width="620"
+                                HorizontalAlignment="Left">
+                            <StackPanel>
+                                <CheckBox x:Name="chkAutoResume" Content="启用自动恢复搬运"
+                                          FontSize="12" Checked="AutoResumeSetting_Changed" Unchecked="AutoResumeSetting_Changed"/>
+                                <TextBlock FontSize="10" Foreground="#888" Margin="18,4,0,0" TextWrapping="Wrap"
+                                           Text="开启后：当账号处于登录在线状态、且当前未在搬运时，按下方设定的间隔自动开启搬运；已在搬运或账号离线时不做任何操作。"/>
+                                <StackPanel Orientation="Horizontal" Margin="18,8,0,2">
+                                    <TextBlock Text="间隔时间：" FontSize="12" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="txtAutoResumeInterval" Width="60" Height="24" FontSize="12"
+                                             VerticalContentAlignment="Center"
+                                             TextChanged="AutoResumeSetting_Changed"/>
+                                    <ComboBox x:Name="cmbAutoResumeUnit" Width="80" Height="24" Margin="6,0,0,0"
+                                              VerticalContentAlignment="Center"
+                                              SelectionChanged="AutoResumeSetting_Changed">
+                                        <ComboBoxItem Content="秒" Tag="Seconds"/>
+                                        <ComboBoxItem Content="分钟" Tag="Minutes"/>
+                                        <ComboBoxItem Content="小时" Tag="Hours"/>
+                                    </ComboBox>
+                                </StackPanel>
                             </StackPanel>
                         </Border>
                     </StackPanel>

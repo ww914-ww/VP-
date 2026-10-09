@@ -93,6 +93,7 @@
     <Compile Include="Models\SftpProfile.cs" />
     <Compile Include="Models\SourceFolderEntry.cs" />
     <Compile Include="Services\DpapiHelper.cs" />
+    <Compile Include="Services\AutoResumeService.cs" />
     <Compile Include="Services\GrayPolicy.cs" />
     <Compile Include="Services\GrayState.cs" />
     <Compile Include="Services\HeartbeatService.cs" />

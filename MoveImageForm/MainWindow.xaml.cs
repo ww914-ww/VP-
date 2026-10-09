@@ -54,6 +54,7 @@ namespace MoveImageForm
         // 灰度更新与心跳（v1.1.0+）
         private HeartbeatService _heartbeatService;
         private UpdateCheckService _updateCheckService;
+        private AutoResumeService _autoResumeService;
         private string _appRoot;
         private string _baseDir;
 
@@ -350,6 +351,7 @@ namespace MoveImageForm
                 SaveConfig();
                 _heartbeatService?.Stop();
                 _updateCheckService?.Stop();
+                _autoResumeService?.Stop();
                 _session.Logout();
                 _notifyIcon.Visible = false;
                 System.Windows.Application.Current.Shutdown();
@@ -388,6 +390,16 @@ namespace MoveImageForm
             _heartbeatService.Start();
             _updateCheckService = new UpdateCheckService(() => _config, _appRoot, _baseDir, Log);
             _updateCheckService.Start();
+
+            // v1.2.0+：自动恢复搬运（账号在线且未搬运时按设定间隔自动开启；功能开关见「软件设置」Tab）
+            _autoResumeService = new AutoResumeService(
+                getConfig: () => _config,
+                isOnline: () => _session.IsLoggedIn,
+                isMoving: () => _isRunning,
+                canResume: CanAutoResumeMoving,
+                startMoving: () => Dispatcher.Invoke(() => { if (!_isRunning) StartMoving(); }),
+                log: Log);
+            _autoResumeService.Start();
 
             // 自动登录：用已保存的密码连接活跃账号，成功后自动开始搬运
             // （开机自启动 = 启动软件 + 登录账号 + 开始搬运）
@@ -2022,6 +2034,73 @@ namespace MoveImageForm
                 : "[系统] 本机已退出灰度测试（仅接收正式版本；已安装的灰度版本不会自动降级，如需回退请联系运维）");
         }
 
+        /// <summary>
+        /// 自动恢复搬运的前置校验（与 StartMoving 的弹窗校验等价但静默）：
+        /// 在线 + 存在有效监控目录 + 角色有上传权限。全部满足时 StartMoving 才不会弹窗。
+        /// </summary>
+        private bool CanAutoResumeMoving()
+        {
+            if (_isRunning) return false;
+            if (!_session.IsLoggedIn) return false;
+            if (_config == null) return false;
+
+            bool anyValid = _sourceFolders.Any(sf =>
+                !string.IsNullOrWhiteSpace(sf.Path) && Directory.Exists(sf.Path)
+                && !string.IsNullOrWhiteSpace(sf.ProfileName));
+            if (!anyValid) return false;
+
+            var activeProfiles = _config.GetActiveProfileNames().Distinct().ToList();
+            if (activeProfiles.Count == 0) return false;
+
+            // 角色判定逻辑与 StartMoving 一致：全部为 SMB 账号时视为 admin
+            string role = _session.CurrentRole;
+            if (string.IsNullOrEmpty(role))
+            {
+                bool allSmb = activeProfiles.All(name =>
+                {
+                    var p = _config.FindProfile(name);
+                    return p != null && p.IsSmb;
+                });
+                if (allSmb) role = "admin";
+            }
+            return RoleEnforcer.CanUpload(role);
+        }
+
+        /// <summary>自动恢复搬运设置变更：开关/间隔数值/间隔单位统一处理，改动即存 config.xml</summary>
+        private void AutoResumeSetting_Changed(object sender, RoutedEventArgs e)
+        {
+            if (_isLoadingConfig || _config == null) return;
+
+            bool enabled = chkAutoResume.IsChecked ?? false;
+            int intervalValue;
+            if (!int.TryParse(txtAutoResumeInterval.Text?.Trim(), out intervalValue) || intervalValue < 1)
+                intervalValue = _config.AutoResumeIntervalValue > 0 ? _config.AutoResumeIntervalValue : 5;
+            string unit = (cmbAutoResumeUnit.SelectedItem as ComboBoxItem)?.Tag as string ?? "Minutes";
+
+            _config.AutoResumeEnabled = enabled;
+            _config.AutoResumeIntervalValue = intervalValue;
+            _config.AutoResumeIntervalUnit = unit;
+            SaveConfig();
+
+            // 仅在开关切换时记日志（输入间隔不刷日志）
+            if (sender == chkAutoResume)
+            {
+                Log(enabled
+                    ? $"[系统] 自动恢复搬运已启用（账号在线且停止搬运 {intervalValue} {UnitDisplayName(unit)} 后自动开启）"
+                    : "[系统] 自动恢复搬运已关闭");
+            }
+        }
+
+        private static string UnitDisplayName(string unit)
+        {
+            switch (unit)
+            {
+                case "Seconds": return "秒";
+                case "Hours": return "小时";
+                default: return "分钟";
+            }
+        }
+
         #endregion
 
         #region Configuration Management
@@ -2447,6 +2526,21 @@ namespace MoveImageForm
 
                 // 可选灰度开关
                 chkGrayOptIn.IsChecked = _config.GrayOptIn;
+
+                // 自动恢复搬运设置
+                chkAutoResume.IsChecked = _config.AutoResumeEnabled;
+                txtAutoResumeInterval.Text = _config.AutoResumeIntervalValue.ToString();
+                foreach (ComboBoxItem item in cmbAutoResumeUnit.Items)
+                {
+                    if (string.Equals(item.Tag as string, _config.AutoResumeIntervalUnit,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        cmbAutoResumeUnit.SelectedItem = item;
+                        break;
+                    }
+                }
+                if (cmbAutoResumeUnit.SelectedItem == null && cmbAutoResumeUnit.Items.Count > 0)
+                    cmbAutoResumeUnit.SelectedIndex = 1; // 默认"分钟"
 
                 // 根据登录状态更新 UI
                 ApplyRoleRestrictions();

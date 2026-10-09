@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.Xml.Serialization;
 using MoveImageForm.Models;
@@ -153,6 +154,39 @@ namespace MoveImageForm
         /// <summary>运行中更新检查间隔（小时，默认 4）</summary>
         [XmlElement]
         public int UpdateCheckIntervalHours { get; set; } = 4;
+
+        // ===== 自动恢复搬运（v1.2.0+） =====
+        /// <summary>自动恢复搬运开关（默认 false 关闭）：
+        /// 账号在线且当前未在搬运时，按设定间隔自动开启搬运；已开启或离线时不动作</summary>
+        [XmlElement]
+        public bool AutoResumeEnabled { get; set; } = false;
+
+        /// <summary>自动恢复间隔数值（默认 5，与 AutoResumeIntervalUnit 组合）</summary>
+        [XmlElement]
+        public int AutoResumeIntervalValue { get; set; } = 5;
+
+        /// <summary>自动恢复间隔单位："Seconds" | "Minutes"（默认） | "Hours"</summary>
+        [XmlElement]
+        public string AutoResumeIntervalUnit { get; set; } = "Minutes";
+
+        /// <summary>自动恢复间隔（带边界钳制：最短 5 秒，最长 24 小时）</summary>
+        public TimeSpan GetAutoResumeInterval()
+        {
+            int value = AutoResumeIntervalValue;
+            if (value < 1) value = 1;
+            if (value > 9999) value = 9999;
+
+            TimeSpan interval;
+            switch ((AutoResumeIntervalUnit ?? "").Trim())
+            {
+                case "Seconds": interval = TimeSpan.FromSeconds(value); break;
+                case "Hours": interval = TimeSpan.FromHours(value); break;
+                default: interval = TimeSpan.FromMinutes(value); break;
+            }
+            if (interval < TimeSpan.FromSeconds(5)) return TimeSpan.FromSeconds(5);
+            if (interval > TimeSpan.FromHours(24)) return TimeSpan.FromHours(24);
+            return interval;
+        }
 
         // ===== 进程监听 =====
         [XmlElement]

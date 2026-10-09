@@ -58,6 +58,9 @@ namespace UpdateSystemTests
             Section("E. UpdateCheckService 运行中检查（主程序侧）");
             TestUpdateCheckService();
 
+            Section("H. AutoResumeService 自动恢复搬运");
+            TestAutoResumeService();
+
             if (!string.IsNullOrEmpty(_launcherPath) && !string.IsNullOrEmpty(_fakeMainPath))
             {
                 Section("F. UpdateInstaller --apply 端到端安装");
@@ -454,6 +457,107 @@ namespace UpdateSystemTests
             svc.Check();
             st = MoveImageForm.Services.GrayState.Read(appRoot);
             Check("目标版本已熔断 → failed", st.Decision == "failed");
+        }
+
+        // ==================== H. AutoResumeService ====================
+
+        /// <summary>可操纵的测试环境：伪造在线/搬运状态与时间源</summary>
+        private class AutoResumeRig
+        {
+            public bool Online = true;
+            public bool Moving = false;
+            public bool CanResume = true;
+            public int StartCount;
+            public DateTime Now = new DateTime(2026, 10, 9, 12, 0, 0);
+            public readonly MoveImageForm.AppConfig Config = new MoveImageForm.AppConfig
+            {
+                AutoResumeEnabled = true,
+                AutoResumeIntervalValue = 5,
+                AutoResumeIntervalUnit = "Minutes"
+            };
+
+            public MoveImageForm.Services.AutoResumeService Create()
+            {
+                return new MoveImageForm.Services.AutoResumeService(
+                    () => Config,
+                    () => Online,
+                    () => Moving,
+                    () => CanResume,
+                    () => { StartCount++; },
+                    m => { },
+                    () => Now);
+            }
+        }
+
+        private static void TestAutoResumeService()
+        {
+            // 1. 功能关闭：不执行任何自动操作
+            var rig1 = new AutoResumeRig();
+            rig1.Config.AutoResumeEnabled = false;
+            var svc1 = rig1.Create();
+            for (int i = 0; i < 5; i++) { svc1.Evaluate(); rig1.Now = rig1.Now.AddMinutes(10); }
+            Check("功能关闭 → 永不触发", rig1.StartCount == 0);
+
+            // 2. 在线且未搬运：到达设定间隔后自动开启一次
+            var rig2 = new AutoResumeRig();
+            var svc2 = rig2.Create();
+            svc2.Evaluate(); // 进入计时
+            rig2.Now = rig2.Now.AddMinutes(3);
+            svc2.Evaluate(); // 3 分钟 < 5 分钟，不触发
+            Check("未达间隔（3<5 分钟）→ 不触发", rig2.StartCount == 0);
+            rig2.Now = rig2.Now.AddMinutes(3);
+            svc2.Evaluate(); // 累计 6 分钟 >= 5 分钟，触发
+            Check("到达间隔（6>=5 分钟）→ 自动开启搬运", rig2.StartCount == 1);
+
+            // 3. 触发后进入搬运状态：跳过，不再动作
+            rig2.Moving = true;
+            rig2.Now = rig2.Now.AddMinutes(10);
+            svc2.Evaluate();
+            svc2.Evaluate();
+            Check("已在搬运 → 跳过不做任何操作", rig2.StartCount == 1);
+
+            // 4. 账号离线：不触发，且计时清零（重新上线后重新计满间隔）
+            var rig4 = new AutoResumeRig();
+            var svc4 = rig4.Create();
+            svc4.Evaluate(); // 开始计时
+            rig4.Now = rig4.Now.AddMinutes(4);
+            rig4.Online = false;
+            svc4.Evaluate(); // 离线：清零
+            rig4.Now = rig4.Now.AddMinutes(4);
+            svc4.Evaluate(); // 仍离线
+            Check("账号离线 → 不触发", rig4.StartCount == 0);
+            rig4.Online = true;
+            svc4.Evaluate(); // 重新上线：重新计时（此刻不应补触发）
+            Check("离线后重新上线 → 重新计时，不补触发", rig4.StartCount == 0);
+            rig4.Now = rig4.Now.AddMinutes(5);
+            svc4.Evaluate(); // 重新计满 5 分钟
+            Check("重新上线计满间隔 → 正常触发", rig4.StartCount == 1);
+
+            // 5. 前置条件不足（无有效目录/无权限）：不触发
+            var rig5 = new AutoResumeRig { CanResume = false };
+            var svc5 = rig5.Create();
+            for (int i = 0; i < 3; i++) { svc5.Evaluate(); rig5.Now = rig5.Now.AddMinutes(10); }
+            Check("前置条件不足 → 不触发", rig5.StartCount == 0);
+
+            // 6. 登出（离线）+ 功能开启：全过程不触发
+            var rig6 = new AutoResumeRig { Online = false };
+            var svc6 = rig6.Create();
+            for (int i = 0; i < 3; i++) { svc6.Evaluate(); rig6.Now = rig6.Now.AddMinutes(10); }
+            Check("退出登录 → 不触发", rig6.StartCount == 0);
+
+            // 7. 间隔单位换算与边界钳制
+            var c = new MoveImageForm.AppConfig { AutoResumeIntervalValue = 30, AutoResumeIntervalUnit = "Seconds" };
+            Check("30 秒（Seconds 单位）", c.GetAutoResumeInterval() == TimeSpan.FromSeconds(30));
+            var c2 = new MoveImageForm.AppConfig { AutoResumeIntervalValue = 2, AutoResumeIntervalUnit = "Hours" };
+            Check("2 小时（Hours 单位）", c2.GetAutoResumeInterval() == TimeSpan.FromHours(2));
+            var c3 = new MoveImageForm.AppConfig { AutoResumeIntervalValue = 1, AutoResumeIntervalUnit = "Seconds" };
+            Check("1 秒被钳制到最短 5 秒", c3.GetAutoResumeInterval() == TimeSpan.FromSeconds(5));
+            var c4 = new MoveImageForm.AppConfig { AutoResumeIntervalValue = 999, AutoResumeIntervalUnit = "Hours" };
+            Check("999 小时被钳制到最长 24 小时", c4.GetAutoResumeInterval() == TimeSpan.FromHours(24));
+            var c5 = new MoveImageForm.AppConfig { AutoResumeIntervalValue = 7, AutoResumeIntervalUnit = "BadUnit" };
+            Check("无效单位回退为分钟", c5.GetAutoResumeInterval() == TimeSpan.FromMinutes(7));
+            var c6 = new MoveImageForm.AppConfig { AutoResumeIntervalValue = -5, AutoResumeIntervalUnit = "Minutes" };
+            Check("非法数值回退为 1 分钟", c6.GetAutoResumeInterval() == TimeSpan.FromMinutes(1));
         }
 
         // ==================== F. --apply 端到端 ====================

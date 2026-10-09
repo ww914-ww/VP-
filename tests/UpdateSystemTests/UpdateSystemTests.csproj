@@ -68,6 +68,7 @@
     <Compile Include="..\..\MoveImageForm\Services\S3Service.cs"><Link>Src\S3Service.cs</Link></Compile>
     <Compile Include="..\..\MoveImageForm\Services\SessionManager.cs"><Link>Src\SessionManager.cs</Link></Compile>
     <Compile Include="..\..\MoveImageForm\Services\GrayPolicy.cs"><Link>Src\App.GrayPolicy.cs</Link></Compile>
+    <Compile Include="..\..\MoveImageForm\Services\AutoResumeService.cs"><Link>Src\AutoResumeService.cs</Link></Compile>
     <Compile Include="..\..\MoveImageForm\Services\GrayState.cs"><Link>Src\GrayState.cs</Link></Compile>
     <Compile Include="..\..\MoveImageForm\Services\MachineIdStore.cs"><Link>Src\App.MachineIdStore.cs</Link></Compile>
     <Compile Include="..\..\MoveImageForm\Services\VersionInfo.cs"><Link>Src\VersionInfo.cs</Link></Compile>
