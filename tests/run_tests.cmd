@@ -43,17 +43,33 @@ echo     OK
 
 echo [3/5] Starting SFTP test server (127.0.0.1:2222)...
 echo [3/5] SFTP server prep >> %LOG%
-python -c "import asyncssh" 2>nul
+rem Prefer managed venv python (asyncssh installed there); fallback to system python
+set PYEXE="C:\Users\wyj\.workbuddy\binaries\python\envs\default\Scripts\python.exe"
+if not exist %PYEXE% set PYEXE=python
+%PYEXE% -c "import asyncssh" 2>nul
 if errorlevel 1 (
     echo     installing asyncssh...
-    python -m pip install asyncssh -q >> %LOG% 2>&1
+    %PYEXE% -m pip install asyncssh -q >> %LOG% 2>&1
 )
-start "vp-sftp-test" /min python test_sftp\standalone_sftp_server.py
-timeout /t 3 /nobreak >nul
+start "vp-sftp-test" /min %PYEXE% test_sftp\standalone_sftp_server.py
+
+rem Wait for server port (cold start of venv python can take several seconds)
+set SFTPARG=
+for /l %%i in (1,1,10) do (
+    netstat -ano | findstr ":2222" | findstr "LISTENING" >nul
+    if not errorlevel 1 set SFTPARG=--sftp
+    if defined SFTPARG goto :sftp_ready
+    timeout /t 1 /nobreak >nul
+)
+:sftp_ready
 
 echo [4/5] Running tests...
 echo [4/5] Running tests... >> %LOG%
-tests\UpdateSystemTests\bin\Release\UpdateSystemTests.exe --sftp --launcher out-bin\Launcher.exe --fakemain tests\FakeMainApp\bin\Release\MoveImageForm.exe
+if "%SFTPARG%"=="" (
+    echo [WARN] SFTP server not detected on :2222, heartbeat tests will be SKIPPED
+    echo [WARN] SFTP server not detected on :2222, heartbeat skipped >> %LOG%
+)
+tests\UpdateSystemTests\bin\Release\UpdateSystemTests.exe %SFTPARG% --launcher out-bin\Launcher.exe --fakemain tests\FakeMainApp\bin\Release\MoveImageForm.exe
 set TESTRC=%ERRORLEVEL%
 echo test exit code: %TESTRC% >> %LOG%
 

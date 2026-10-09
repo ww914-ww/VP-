@@ -72,7 +72,22 @@ namespace UpdateSystemTests
             if (_enableSftp)
             {
                 Section("G. HeartbeatService 心跳上报（真实 SFTP 127.0.0.1:2222）");
-                TestHeartbeat();
+                if (!IsTcpListening("127.0.0.1", 2222, 3000))
+                {
+                    // 服务器未启动（如 asyncssh 缺失/端口被占用变化）：跳过而非崩溃
+                    Console.WriteLine("  [SKIP] SFTP 测试服务器不可达（127.0.0.1:2222），心跳测试跳过");
+                }
+                else
+                {
+                    try
+                    {
+                        TestHeartbeat();
+                    }
+                    catch (Exception ex)
+                    {
+                        Check("心跳测试执行（无未处理异常）: " + ex.GetType().Name + ": " + ex.Message, false);
+                    }
+                }
             }
             else
             {
@@ -736,6 +751,22 @@ namespace UpdateSystemTests
                 return -1;
             }
             return p.ExitCode;
+        }
+
+        /// <summary>探测 TCP 端口是否在监听（带超时）</summary>
+        private static bool IsTcpListening(string host, int port, int timeoutMs)
+        {
+            try
+            {
+                using (var client = new System.Net.Sockets.TcpClient())
+                {
+                    var ar = client.BeginConnect(host, port, null, null);
+                    if (!ar.AsyncWaitHandle.WaitOne(timeoutMs)) return false;
+                    client.EndConnect(ar);
+                    return true;
+                }
+            }
+            catch { return false; }
         }
 
         /// <summary>--apply 完成后会自动重启 Launcher（UI 模式）并可能拉起假主程序，测试后清理</summary>
